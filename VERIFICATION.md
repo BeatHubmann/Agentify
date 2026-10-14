@@ -91,6 +91,15 @@ These are the suites of A§26.2: `unit`, `property`, `analytic`, `orchestration`
 | Test oracles corrected during the slice | the lock-added-mid-run case ends at the gate (`gate_failed`), not at commit, as A§8.6 step 5 specifies; one "unreachable node" edit case actually produced two valid components and was replaced by a genuinely unreachable cycle |
 | Log location | Local run; CI evidence follows on the pull request |
 
+### E-4: slice 2a in CI, 2026-10-14 21:47 CEST (19:47 UTC)
+
+| Field | Value |
+|---|---|
+| Revision | `045b186` (PR #4 head; code identical to E-3's `487db7e`, plus documentation) |
+| Command | GitHub Actions workflow `ci`, run 38626311639 |
+| Results | backend checks pass (**138 passed** in 61.4 s, including the SIGTERM, SIGSTOP/SIGCONT, SIGKILL and database-pause cases on Linux); secret scan pass; spell check pass |
+| Log location | https://github.com/BeatHubmann/Agentify/actions/runs/38626311639 |
+
 ## 1. Invariants (§10, A§22)
 
 | ID | Requirement (short) | Source | Proof obligation (scenario) | Layer | Independent oracle | Negative control | Status |
