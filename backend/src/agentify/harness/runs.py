@@ -37,6 +37,7 @@ class ClaimedRun:
     fence: Fence
     instructions: str = ""
     parent_run_id: str | None = None
+    entry_point: str = ""
 
 
 async def _read_at(
@@ -267,7 +268,7 @@ async def claim(
                  lease_expires_at = now() + make_interval(secs => %s)
                WHERE id = %s AND state = 'admitted'
                RETURNING id, process_id, kind, mode, base_revision_id, initiated_by, lease_epoch,
-                         instructions, parent_run_id""",
+                         instructions, parent_run_id, entry_point""",
                 (owner, lease_seconds, row["run_id"]),
             )
         ).fetchone()
@@ -287,6 +288,7 @@ async def claim(
         fence=Fence(str(run["id"]), owner, int(str(run["lease_epoch"]))),
         instructions=str(run["instructions"]),
         parent_run_id=None if run["parent_run_id"] is None else str(run["parent_run_id"]),
+        entry_point=str(run["entry_point"]),
     )
 
 
@@ -435,3 +437,43 @@ async def admit_router_followups(ws: Workspace, router: AgentKind) -> list[str]:
         except AdmissionRefused:
             continue  # a router turn is active; the notices wait for the next pass
     return admitted
+
+
+async def stop_requested(
+    ws: Workspace, run_id: str, *, attachment_grace_seconds: float
+) -> str | None:
+    """`cancelled`, `disconnected`, or None (A§8.5).
+
+    A run whose stream was attached and whose attachment is older than the grace period is stopped
+    like a cancel: the check records the cancel, so every later check (including the commit's) sees it."""
+    async with ws.db.tx() as conn:
+        row = await (
+            await conn.execute(
+                """SELECT cancel_requested_at IS NOT NULL AS cancelled,
+                      stream_attached_until IS NOT NULL
+                        AND stream_attached_until < now() - make_interval(secs => %s) AS gone
+               FROM run WHERE id = %s""",
+                (attachment_grace_seconds, run_id),
+            )
+        ).fetchone()
+        if row is None:
+            return None
+        if row["cancelled"]:
+            return "cancelled"
+        if row["gone"]:
+            await conn.execute(
+                "UPDATE run SET cancel_requested_at = now() WHERE id = %s", (run_id,)
+            )
+            return "disconnected"
+    return None
+
+
+async def attach(ws: Workspace, run_id: str, *, seconds: float) -> bool:
+    """A client is attached to this run's stream for the next `seconds` (durable heartbeat)."""
+    async with ws.db.tx() as conn:
+        moved = await conn.execute(
+            """UPDATE run SET stream_attached_until = now() + make_interval(secs => %s)
+               WHERE id = %s AND state NOT IN ('committed', 'unchanged', 'rolled_back', 'rollback_failed')""",
+            (seconds, run_id),
+        )
+    return moved.rowcount == 1

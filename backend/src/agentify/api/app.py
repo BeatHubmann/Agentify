@@ -7,16 +7,17 @@ Unknown and not-visible resources both answer 404."""
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from agentify import inbox, intake
+from agentify import chat, inbox, intake
 from agentify.api import errors
 from agentify.api.errors import BadRequest, Forbidden, NotFound
+from agentify.api.stream import STREAM_HEADERS, StreamSettings, relay
 from agentify.editing import EditBatch, PatchRequest, apply_edit_batch
 from agentify.harness import runs
 from agentify.identity import (
@@ -44,6 +45,7 @@ class ApiContext:
     verifier: TokenVerifier
     oidc: OIDCSettings
     gate: SecretGate
+    stream: StreamSettings = field(default_factory=StreamSettings)
 
 
 class EngagementIn(BaseModel):
@@ -91,6 +93,10 @@ class AnswerIn(BaseModel):
 
 class ConfirmationIn(BaseModel):
     run_kind: str
+
+
+class ChatIn(BaseModel):
+    message: str = Field(min_length=1, max_length=20_000)
 
 
 @contextmanager
@@ -369,6 +375,63 @@ def _run_and_inbox_routes(app: FastAPI, ctx: ApiContext, access: Access) -> None
         return {"intent_confirmation_id": confirmation}
 
 
+def _chat_routes(app: FastAPI, ctx: ApiContext, access: Access) -> None:
+    Caller = Annotated[Principal, Depends(access.principal)]  # noqa: N806 - a type alias
+
+    def streaming(who: Principal, run_id: str, after: int) -> StreamingResponse:
+        body = relay(ctx.ws, run_id, after=after, settings=ctx.stream, scope=scoped(who))
+        return StreamingResponse(
+            body,
+            media_type="text/event-stream",
+            headers={**STREAM_HEADERS, "x-agentify-run-id": run_id},
+        )
+
+    @app.post("/processes/{process_id}/chat")
+    async def chat_turn(process_id: str, body: ChatIn, who: Caller) -> StreamingResponse:
+        """Append the user's message, admit a router turn, and stream it (A§2 chat path)."""
+        await access.require(who, process_id, "consultant")
+        router = ctx.registry.agents["router"]
+        with scoped(who):
+            earlier = await chat.history(ctx.ws, process_id)
+            await chat.append(
+                ctx.ws,
+                process_id=process_id,
+                author_kind="user",
+                author_id=who.user_id,
+                content=body.message,
+            )
+            run_id = await runs.admit(
+                ctx.ws,
+                process_id=process_id,
+                kind=router,
+                mode="incremental",
+                initiated_by=who.user_id,
+                entry_point="chat",
+                instructions=chat.as_instructions(earlier, body.message),
+            )
+            await runs.attach(ctx.ws, run_id, seconds=ctx.stream.attach_seconds)
+        return streaming(who, run_id, 0)
+
+    @app.get("/runs/{run_id}/stream")
+    async def resume_stream(run_id: str, who: Caller, after: int = 0) -> StreamingResponse:
+        """Attach to a run's stream (again), from an event offset: reconnects stay within the grace period."""
+        with scoped(who):
+            async with ctx.db.tx() as conn:
+                row = await (
+                    await conn.execute("SELECT process_id FROM run WHERE id = %s", (run_id,))
+                ).fetchone()
+        if row is None:
+            raise NotFound(run_id)
+        await access.require(who, str(row["process_id"]))
+        return streaming(who, run_id, after)
+
+    @app.get("/processes/{process_id}/chat")
+    async def chat_history(process_id: str, who: Caller) -> list[dict[str, Any]]:
+        await access.require(who, process_id)
+        with scoped(who):
+            return [asdict(m) for m in await chat.history(ctx.ws, process_id, last=200)]
+
+
 def create_app(ctx: ApiContext) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -389,6 +452,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
         return response
 
     access = Access(ctx)
+    _chat_routes(app, ctx, access)
     _admin_routes(app, ctx, access)
     _process_read_routes(app, ctx, access)
     _process_write_routes(app, ctx, access)
