@@ -1462,15 +1462,15 @@ There is no deviation from any §10 invariant; D-12 states how invariant 1's wor
 
 ### 25.1 Changes to the signed-off design
 
-Changes made during governed development, each in the PR that implements it.
+Changes made during governed development, each in the PR that implements it. A change takes effect only with the operator's decision recorded in the last column.
 
-| ID | Slice | Change | Reason |
-|---|---|---|---|
-| C-1 | 2b | Specification citations are `(input, verbatim quote)`, checked by containment, instead of an offset span with a quote hash (A§6.11) | Models copy text reliably but count characters unreliably; containment is just as deterministic and checkable |
-| C-2 | 2b | From-scratch runs of artifact-authoring kinds over existing output need the same attributed human intent as flow kinds (A§8.2) | Regenerating any agent artifact discards work; the same fail-closed rule applies, and corrupt artifacts are never silently regenerated |
-| C-3 | 2b | Router follow-up turns are triggered by durable `router_continuation` notices consumed in the admission transaction (A§9.1) | A follow-up admitted directly by a finishing child would be refused while another router turn is active, losing the notice |
-| C-4 | 2c-1 | The worker's database role bypasses row-level security instead of setting a per-job engagement scope (A§19) | The sweeper and router follow-ups scan runs across engagements by design, and untrusted code runs in sandboxes, not in the worker. RLS stays the second wall for every API request. Scoping the worker per run remains possible later |
-| C-5 | 2c-2 | The gateway polls the run-event log (default every 0.2 s per attached stream) instead of listening on a Postgres notification channel (A§2) | Polling needs no long-lived listening connection per gateway and has no lost-notification path; the log is the source of truth either way. Latency is bounded by the poll interval. Moving to `LISTEN`/`NOTIFY` later changes only the relay's wait, not the protocol |
+| ID | Slice | Change | Reason | Operator decision |
+|---|---|---|---|---|
+| C-1 | 2b | Specification citations are `(input, verbatim quote)`, checked by containment, instead of an offset span with a quote hash (A§6.11) | Models copy text reliably but count characters unreliably; containment is just as deterministic and checkable | Approved 2026-10-14 (PR #5) |
+| C-2 | 2b | From-scratch runs of artifact-authoring kinds over existing output need the same attributed human intent as flow kinds (A§8.2) | Regenerating any agent artifact discards work; the same fail-closed rule applies, and corrupt artifacts are never silently regenerated | Approved 2026-10-14 (PR #5) |
+| C-3 | 2b | Router follow-up turns are triggered by durable `router_continuation` notices consumed in the admission transaction (A§9.1) | A follow-up admitted directly by a finishing child would be refused while another router turn is active, losing the notice | Approved 2026-10-14 (PR #5) |
+| C-4 | 2c-1 | The worker's database role bypasses row-level security instead of setting a per-job engagement scope (A§19) | The sweeper and router follow-ups scan runs across engagements by design, and untrusted code runs in sandboxes, not in the worker. RLS stays the second wall for every API request. Scoping the worker per run remains possible later | Approved 2026-10-14 (PR #8) |
+| C-5 | 2c-2 | The gateway polls the run-event log (default every 0.2 s per attached stream) instead of listening on a Postgres notification channel (A§2) | Polling needs no long-lived listening connection per gateway and has no lost-notification path; the log is the source of truth either way. Latency is bounded by the poll interval. Moving to `LISTEN`/`NOTIFY` later changes only the relay's wait, not the protocol | Approved 2026-10-14 (PR #9) |
 
 ---
 
