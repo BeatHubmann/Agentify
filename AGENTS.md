@@ -25,6 +25,7 @@ Order of authority: specification → signed-off architecture → task plan. Tes
 | `cd backend && uv sync --locked` | Install the pinned toolchain and dependencies |
 | `cd backend && make check` | Everything CI runs for the backend: `ruff format --check`, `ruff check`, `mypy --strict`, `lint-imports`, `pytest` |
 | `typos` and `gitleaks git . --redact` (repository root) | Spell check and secret scan, as in CI |
+| `cd tools/aislop && npm ci --ignore-scripts && cd ../.. && AISLOP_NO_TELEMETRY=1 tools/aislop/node_modules/.bin/aislop ci --human` | aislop quality gate, as in CI: fails on any error-severity finding or a score below `failBelow` in `.aislop/config.yml` |
 
 `pytest` needs a running Docker daemon: orchestration and failure tests start real Postgres and MinIO containers. Without Docker they fail; they never skip silently. CI (`.github/workflows/ci.yml`) runs the same commands with actions pinned to commit SHAs.
 
