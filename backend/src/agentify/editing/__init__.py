@@ -23,6 +23,7 @@ from agentify.domain.ids import is_agent_id
 from agentify.domain.validate import Violation
 from agentify.harness.gate import validate_flow_state
 from agentify.registry import FlowAgentKind
+from agentify.store import security_events
 from agentify.store.workspace import (
     BaseMovedConflict,
     CommitValidationFailed,
@@ -152,7 +153,10 @@ async def apply_edit_batch(
     )
     async with ws.db.tx() as conn:
         engagement_id = await ws.engagement_of(conn, process_id)
-    sha = await ws.blobs.put(engagement_id, ws.gate.check_bytes(data, where=kind.edit_layer_path))
+    scrubbed = await security_events.checked(
+        ws.db, ws.gate, data, exit="blob", location=kind.edit_layer_path, process_id=process_id
+    )
+    sha = await ws.blobs.put(engagement_id, scrubbed)
 
     async def validate(reader: PathReader, _changed: frozenset[str]) -> list[Violation]:
         return await validate_flow_state(reader, kind, incremental=False, base_flow=None)

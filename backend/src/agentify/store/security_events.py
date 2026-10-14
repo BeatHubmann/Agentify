@@ -71,13 +71,18 @@ async def checked(
         raise
 
 
-async def hits_in_run(db: Database, run_id: str, hit: Hit) -> int:
+REFUSED_AGENT_WRITES: tuple[Exit, ...] = ("staged_write", "inbox")
+
+
+async def refusals_in_run(db: Database, run_id: str, hit: Hit) -> int:
+    """How often the run's agent writes were refused for this fingerprint. Redactions of the same
+    value (its tool-call event, say) do not count: they are not attempts to store it (A§10.2)."""
     async with db.tx() as conn:
         row = await (
             await conn.execute(
                 """SELECT count(*) AS n FROM security_event
-                   WHERE run_id = %s AND rule = %s AND fingerprint = %s""",
-                (run_id, hit.rule, hit.fingerprint),
+                   WHERE run_id = %s AND rule = %s AND fingerprint = %s AND exit = ANY(%s)""",
+                (run_id, hit.rule, hit.fingerprint, list(REFUSED_AGENT_WRITES)),
             )
         ).fetchone()
     return int(str(row["n"])) if row else 0

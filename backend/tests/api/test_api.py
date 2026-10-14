@@ -1,6 +1,8 @@
 """API: authentication, segregation (service checks and row-level security), roles, attribution,
 error bodies and logs through the secret gate (A§18, A§19, OD-7, OD-8)."""
 
+import hashlib
+import hmac
 import io
 
 import httpx
@@ -10,6 +12,7 @@ import pytest
 from agentify import inbox
 from agentify.observability import configure_logging
 from agentify.store.db import engagement_scope
+from agentify.store.workspace import Workspace
 from tests.api.conftest import (
     ADMIN_SUBJECT,
     TokenFactory,
@@ -20,7 +23,7 @@ from tests.api.conftest import (
 )
 from tests.conftest import KNOWN_SECRET, Infra
 from tests.support.agents import INPUT_TEXT
-from tests.support.gates import make_gate
+from tests.support.gates import FINGERPRINT_KEY, make_gate
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
@@ -243,8 +246,12 @@ async def test_inbox_answers_and_confirmations_are_attributed_to_the_signed_in_u
     ) == (201, ("user", setup["user_id"]), 201)
 
 
+def known_fingerprint() -> str:
+    return hmac.new(FINGERPRINT_KEY.encode(), KNOWN_SECRET.encode(), hashlib.sha256).hexdigest()
+
+
 async def test_error_bodies_and_logs_never_carry_a_credential(
-    api: httpx.AsyncClient, token: TokenFactory
+    api: httpx.AsyncClient, token: TokenFactory, workspace: Workspace
 ) -> None:
     captured = io.StringIO()
     configure_logging(make_gate(KNOWN_SECRET), stream=captured)
@@ -263,6 +270,14 @@ async def test_error_bodies_and_logs_never_carry_a_credential(
         f"/processes/{pid}/artifact", params={"path": "inputs/doc.md"}, headers=headers
     )
     logs = captured.getvalue()
+    async with workspace.db.tx() as conn:  # the worker role reads past row-level security
+        events = await (
+            await conn.execute(
+                """SELECT exit, rule, fingerprint, location FROM security_event
+                   WHERE process_id = %s OR location LIKE %s ORDER BY seq""",
+                (pid, f"/processes/{pid}/%"),
+            )
+        ).fetchall()
     assert (
         bad_name.status_code,
         KNOWN_SECRET in bad_name.text,
@@ -271,7 +286,20 @@ async def test_error_bodies_and_logs_never_carry_a_credential(
         stored.status_code,
         KNOWN_SECRET in logs,
         "[REDACTED" in logs,
-    ) == (400, False, 422, "secret_detected", 404, False, True)
+        [(e["exit"], e["rule"], e["fingerprint"], e["location"]) for e in events],
+    ) == (
+        400,
+        False,
+        422,
+        "secret_detected",
+        404,
+        False,
+        True,
+        [
+            ("http_body", "known-value", known_fingerprint(), f"/processes/{pid}/inputs"),
+            ("blob", "known-value", known_fingerprint(), "inputs/doc.md"),
+        ],
+    )
 
 
 async def test_edit_batches_through_the_api_commit_conflict_or_are_rejected(

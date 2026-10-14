@@ -10,6 +10,8 @@ from agentify.harness import runs
 from agentify.identity import Unauthenticated
 from agentify.observability import logger
 from agentify.secretgate import SecretFound, SecretGate
+from agentify.store import security_events
+from agentify.store.db import Database
 
 
 class NotFound(Exception):
@@ -31,46 +33,55 @@ class BadRequest(Exception):
 _INBOX_STATUS = {"human_answer_required": 403, "unknown_item": 404}
 
 
-def install(app: FastAPI, gate: SecretGate) -> None:
-    def problem(status: int, code: str, detail: str) -> JSONResponse:
+def install(app: FastAPI, gate: SecretGate, db: Database) -> None:
+    async def handle(request: Request, exc: Exception) -> JSONResponse:
+        status, code, detail = _problem(exc)
+        scrubbed = gate.redact_text(detail)
+        await security_events.record(
+            db, gate, exit="http_body", hits=scrubbed.hits, location=request.url.path
+        )
         body = {
             "type": "about:blank",
             "status": status,
             "code": code,
             "title": f"error.{code}",
-            "detail": gate.redact_text(detail).value,
+            "detail": scrubbed.value,
         }
         return JSONResponse(body, status_code=status, media_type="application/problem+json")
 
-    async def handle(_request: Request, exc: Exception) -> JSONResponse:  # noqa: PLR0911 - one mapping per kind
+    def _problem(exc: Exception) -> tuple[int, str, str]:  # noqa: PLR0911 - one mapping per kind
         match exc:
             case Unauthenticated():
-                return problem(401, "unauthenticated", "A valid bearer token is required.")
+                return (401, "unauthenticated", "A valid bearer token is required.")
             case Forbidden(role=role):
-                return problem(403, "forbidden", f"This action requires the {role} role.")
+                return (403, "forbidden", f"This action requires the {role} role.")
             case NotFound():
-                return problem(404, "not_found", "Not found.")
+                return (404, "not_found", "Not found.")
             case BadRequest(code=code):
-                return problem(400, code, str(exc))
+                return (400, code, str(exc))
             case runs.AdmissionRefused(code=code, detail=detail):
-                return problem(409, code, detail or code)
+                return (409, code, detail or code)
             case EditConflict(paths=paths):
-                return problem(
-                    409, "edit_conflict", f"Changed since your base revision: {', '.join(paths)}"
+                return (
+                    409,
+                    "edit_conflict",
+                    f"Changed since your base revision: {', '.join(paths)}",
                 )
             case EditRejected(violations=violations):
-                return problem(422, violations[0].code if violations else "edit_rejected", str(exc))
+                return (422, violations[0].code if violations else "edit_rejected", str(exc))
             case inbox.InboxRejected(code=code):
-                return problem(_INBOX_STATUS.get(code, 409), code, str(exc))
-            case SecretFound(rule=rule):
-                return problem(
-                    422, "secret_detected", f"The content resembles a credential ({rule})."
+                return (_INBOX_STATUS.get(code, 409), code, str(exc))
+            case SecretFound(rule=rule, where=where):
+                return (
+                    422,
+                    "secret_detected",
+                    f"The content at {where} resembles a credential ({rule}).",
                 )
             case RequestValidationError():
-                return problem(422, "invalid_request", str(exc.errors()[:3]))
+                return (422, "invalid_request", str(exc.errors()[:3]))
             case _:
                 logger().error("unhandled_error", error=type(exc).__name__)
-                return problem(500, "internal_error", "Internal error.")
+                return (500, "internal_error", "Internal error.")
 
     for kind in (
         Unauthenticated,

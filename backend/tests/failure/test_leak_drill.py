@@ -106,12 +106,18 @@ async def test_a_staged_write_carrying_a_credential_is_correctable_once(
         "committed",
         [],
         [
-            {
+            {  # the tool call carrying it is redacted in its run event...
+                "exit": "run_event",
+                "rule": rule,
+                "fingerprint": fingerprint(canary),
+                "location": "run_event.tool_call",
+            },
+            {  # ...and the write it attempted is refused
                 "exit": "staged_write",
                 "rule": rule,
                 "fingerprint": fingerprint(canary),
                 "location": FLOW_PATH,
-            }
+            },
         ],
         True,
         False,
@@ -139,7 +145,7 @@ async def test_repeating_the_same_credential_aborts_the_run(
         await history(workspace, process_id),
         await leftovers(workspace, run_id),
         stored_objects_holding(infra, await engagement_of(workspace, process_id), canary),
-        [(e["rule"], e["fingerprint"]) for e in events],
+        [(e["exit"], e["rule"], e["fingerprint"]) for e in events],
     ) == (
         "rolled_back",
         "aborted",
@@ -147,7 +153,7 @@ async def test_repeating_the_same_credential_aborts_the_run(
         [],
         (0, 0),
         [],
-        [(rule, fingerprint(canary))] * 2,
+        [("run_event", rule, fingerprint(canary)), ("staged_write", rule, fingerprint(canary))] * 2,
     )
 
 
@@ -221,7 +227,16 @@ async def test_a_gate_report_quoting_an_allow_listed_value_is_stored_redacted(
         holds(detail, sample),
         "[REDACTED:slack-token]" in detail,
         [(e["exit"], e["rule"], e["fingerprint"]) for e in events],
-    ) == ("rolled_back", True, False, True, [("run_record", "slack-token", fingerprint(sample))])
+    ) == (
+        "rolled_back",
+        True,
+        False,
+        True,
+        [
+            ("run_event", "slack-token", fingerprint(sample)),
+            ("run_record", "slack-token", fingerprint(sample)),
+        ],
+    )
 
 
 async def inbox_rows(ws: Workspace, process_id: str) -> str:
@@ -249,4 +264,9 @@ async def test_an_agent_question_carrying_a_credential_is_correctable_and_never_
         holds(await inbox_rows(workspace, process_id), canary),
         "secret_in_content" in str(script.seen[1][-1]),
         [(e["exit"], e["rule"], e["fingerprint"]) for e in events],
-    ) == ("committed", False, True, [("inbox", rule, fingerprint(canary))])
+    ) == (
+        "committed",
+        False,
+        True,
+        [("run_event", rule, fingerprint(canary)), ("inbox", rule, fingerprint(canary))],
+    )

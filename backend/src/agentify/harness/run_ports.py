@@ -20,7 +20,7 @@ async def _refused(
 ) -> Exception:
     """An agent write the gate refused (the exit recorded the hit): correctable once, abort on the
     same fingerprint again."""
-    if await security_events.hits_in_run(ws.db, claimed.run_id, exc.hit) > 1:
+    if await security_events.refusals_in_run(ws.db, claimed.run_id, exc.hit) > 1:
         return RunAbort("secret_gate_repeated", f"{exc.rule} at {location}")
     return correctable(
         "secret_in_content",

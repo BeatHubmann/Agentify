@@ -381,7 +381,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
 
     app = FastAPI(title="Agentify", lifespan=lifespan)
     app.state.ctx = ctx
-    errors.install(app, ctx.gate)
+    errors.install(app, ctx.gate, ctx.db)
 
     @app.middleware("http")
     async def access_log(request: Request, call_next: Any) -> Response:

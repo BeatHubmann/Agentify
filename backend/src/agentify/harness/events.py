@@ -14,11 +14,21 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
+from agentify.store import security_events
 from agentify.store.workspace import Fence, Workspace
 
 
 async def publish(ws: Workspace, fence: Fence, kind: str, payload: dict[str, Any]) -> None:
-    scrubbed = ws.gate.redact_text(json.dumps(payload, ensure_ascii=False, sort_keys=True)).value
+    redacted = ws.gate.redact_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    await security_events.record(
+        ws.db,
+        ws.gate,
+        exit="run_event",
+        hits=redacted.hits,
+        location=f"run_event.{kind}",
+        run_id=fence.run_id,
+    )
+    scrubbed = redacted.value
     async with ws.db.tx() as conn:
         await conn.execute(
             "SELECT pg_advisory_xact_lock(hashtext('events:' || %s))", (fence.run_id,)
