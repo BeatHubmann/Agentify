@@ -27,6 +27,7 @@ from agentify.identity import (
     grant,
 )
 from agentify.observability import logger
+from agentify.store.db import check_log_settings
 
 MAX_INPUT_BYTES = 1_000_000
 
@@ -377,6 +378,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await ctx.db.open()
+        await check_log_settings(ctx.db)
         yield
         await ctx.db.close()
 

@@ -12,7 +12,7 @@ from testcontainers.community.postgres import PostgresContainer
 
 from agentify.registry import Registry, load_registry
 from agentify.store.blobs import BlobStore
-from agentify.store.db import Database
+from agentify.store.db import SAFE_LOG_SETTINGS, Database
 from agentify.store.migrate import create_application_role, upgrade
 from agentify.store.workspace import Workspace
 from tests.support.gates import make_gate
@@ -43,7 +43,9 @@ class Infra:
 @pytest.fixture(scope="session")
 def infra() -> Iterator[Infra]:
     with (
-        PostgresContainer(POSTGRES_IMAGE, driver="psycopg") as pg,
+        PostgresContainer(POSTGRES_IMAGE, driver="psycopg").with_command(
+            " ".join(["postgres", *(f"-c {k}={v}" for k, v in SAFE_LOG_SETTINGS.items())])
+        ) as pg,
         MinioContainer(MINIO_IMAGE) as minio,
     ):
         admin_url = pg.get_connection_url()
