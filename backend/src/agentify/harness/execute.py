@@ -386,69 +386,45 @@ async def execute(
 ) -> str:
     """Run one claimed run to a final state. `credentials` are its per-request credentials (A§17.2):
     known values in every sink, other runs' included, until the run, its `finish` too, is over."""
+    config = config or HarnessConfig()
     with ws.gate.registered(credentials):
-        return await _execute(
-            ws,
-            claimed,
-            kind,
-            agent=agent,
-            model=model,
-            prompt=prompt,
-            output_language=output_language,
-            config=config or HarnessConfig(),
-            registry=registry,
-        )
-
-
-async def _execute(
-    ws: Workspace,
-    claimed: runs.ClaimedRun,
-    kind: AgentKind,
-    *,
-    agent: Agent[Any, str],
-    model: Model,
-    prompt: str,
-    output_language: str,
-    config: HarnessConfig,
-    registry: Registry | None,
-) -> str:
-    lost = asyncio.Event()
-    outcome: Outcome
-    try:
-        async with _lease_keeper(ws, claimed.fence, config, lost):
-            outcome = await _loop(
-                ws,
-                claimed,
-                kind,
-                agent=agent,
-                model=model,
-                prompt=prompt,
-                output_language=output_language,
-                lost=lost,
-                registry=registry,
-                grace=config.attachment_grace_seconds,
-            )
-    except asyncio.CancelledError:
+        lost = asyncio.Event()
+        outcome: Outcome
+        try:
+            async with _lease_keeper(ws, claimed.fence, config, lost):
+                outcome = await _loop(
+                    ws,
+                    claimed,
+                    kind,
+                    agent=agent,
+                    model=model,
+                    prompt=prompt,
+                    output_language=output_language,
+                    lost=lost,
+                    registry=registry,
+                    grace=config.attachment_grace_seconds,
+                )
+        except asyncio.CancelledError:
+            with anyio.CancelScope(shield=True):
+                await finish(
+                    ws,
+                    claimed,
+                    kind,
+                    Outcome("cancelled", "runtime cancellation"),
+                    config=config,
+                    registry=registry,
+                )
+            raise
+        except RunAbort as exc:
+            outcome = Outcome("aborted", f"{exc.reason}: {exc.detail}")
+        except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
+            outcome = Outcome("aborted", type(exc).__name__)
+        except LeaseLost:
+            outcome = Outcome("lease_lost")
+        except SecretFound as exc:
+            outcome = Outcome("aborted", f"secret_gate: {exc.rule} at {exc.where}")
+        except Exception as exc:  # noqa: BLE001 - any failure, including provider errors, ends in rollback
+            outcome = Outcome("aborted", _traceback_detail(exc))
         with anyio.CancelScope(shield=True):
-            await finish(
-                ws,
-                claimed,
-                kind,
-                Outcome("cancelled", "runtime cancellation"),
-                config=config,
-                registry=registry,
-            )
-        raise
-    except RunAbort as exc:
-        outcome = Outcome("aborted", f"{exc.reason}: {exc.detail}")
-    except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
-        outcome = Outcome("aborted", type(exc).__name__)
-    except LeaseLost:
-        outcome = Outcome("lease_lost")
-    except SecretFound as exc:
-        outcome = Outcome("aborted", f"secret_gate: {exc.rule} at {exc.where}")
-    except Exception as exc:  # noqa: BLE001 - any failure, including provider errors, ends in rollback
-        outcome = Outcome("aborted", _traceback_detail(exc))
-    with anyio.CancelScope(shield=True):
-        final = await finish(ws, claimed, kind, outcome, config=config, registry=registry)
+            final = await finish(ws, claimed, kind, outcome, config=config, registry=registry)
     return final

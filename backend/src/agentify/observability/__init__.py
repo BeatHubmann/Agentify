@@ -4,6 +4,7 @@ Every key and value is scrubbed, nested ones included; an object is scrubbed as 
 render to. A redaction is recorded on the line itself as `security_event` (A§18.3, change C-7). If
 the primary stream fails, the same scrubbed line goes to the fallback stream, else it is dropped."""
 
+import contextlib
 import json
 import logging
 import sys
@@ -97,11 +98,9 @@ class _FallbackHandler(logging.StreamHandler):  # type: ignore[type-arg]
         self._fallback = fallback
 
     def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802 - the stdlib's name
-        try:
+        with contextlib.suppress(*_WRITE_ERRORS):  # nowhere left to write: the line is dropped
             self._fallback.write(self.format(record) + self.terminator)
             self._fallback.flush()
-        except _WRITE_ERRORS:
-            pass
 
 
 def configure_logging(
