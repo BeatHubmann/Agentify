@@ -12,7 +12,7 @@
 | Document | Role |
 |---|---|
 | `genesis/PRODUCTION-BRIEF.md`, `genesis/IMPLEMENTATION-PROMPT.md` | The specification. Highest authority for intended behavior |
-| `ARCHITECTURE.md` | The design. Authoritative once the operator has signed it off (gate G2); until then a proposal. Records operator decisions (A§1) and every deviation from the brief (A§25) |
+| `ARCHITECTURE.md` | The design. Signed off at gate G2 on 2026-10-14 and authoritative. Records operator decisions and approvals (A§1) and every deviation from the brief (A§25) |
 | `VERIFICATION.md` | Requirement → proof ledger. Tracks each requirement as proposed, implemented or verified, with evidence |
 | Task plans and PR descriptions | Scope of one change, below the documents above |
 

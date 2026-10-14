@@ -1,6 +1,6 @@
 # Agentify: verification ledger
 
-> **Status:** draft for operator sign-off alongside `ARCHITECTURE.md` (gate G2). No implementation exists; every row is *proposed* or *deferred*.
+> **Status:** accepted with `ARCHITECTURE.md` at gate G2 on 2026-10-14 (PR #1). No implementation exists yet; every row is *proposed* or *deferred* until evidence is recorded.
 > **Authority:** `genesis/PRODUCTION-BRIEF.md` (cited as "§n") is the specification; `ARCHITECTURE.md` (cited as "A§n") is the design. This file maps each requirement to the evidence that will prove it. It adds no requirements.
 > **Date:** 2026-10-14.
 

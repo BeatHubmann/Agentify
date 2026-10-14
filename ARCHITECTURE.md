@@ -1,6 +1,6 @@
 # Agentify: architecture
 
-> **Status:** design proposal for operator sign-off (gate G2). No implementation code exists yet. Every mechanism below is *proposed*. `VERIFICATION.md` tracks, per requirement, whether it is proposed, implemented or verified.
+> **Status:** signed off by the operator at gate G2 on 2026-10-14 (PR #1), together with the approvals recorded in A§1.1. No implementation code exists yet. Mechanisms below are designed, not built; `VERIFICATION.md` tracks, per requirement, whether it is proposed, implemented or verified. Changes to this document now go through governed development: a PR that states the change and its reason.
 > **Authority:** `genesis/PRODUCTION-BRIEF.md` and `genesis/IMPLEMENTATION-PROMPT.md` are the specification. This document is the design that answers them. Where it departs from the brief, §25 says so, with reasons. Section references like "§6.3" point into the brief; "A§n" points into this document.
 > **Date:** 2026-10-14.
 
@@ -65,6 +65,18 @@ Recorded 2026-10-14 (gate G1). They are binding inputs; changing one is an opera
 | OD-18 | Coverage reference | The merged current-state flow, including user edits |
 | OD-19 | Repository | Public, with branch protection, secret scanning and push protection. **No client-derived material in the repository**, anonymized or not; the real corpus lives in a private EU store |
 | OD-20 | Review | Draft PR on `design/architecture`; fresh-context invariant review before operator review |
+| OD-21 | Database (2026-10-14, after G2) | **AWS RDS for PostgreSQL in `eu-central-1`** by default. Fly Managed Postgres only if Fly confirms in writing that its backups stay in the EU, decided before deployment (A§28 O-1) |
+
+### 1.1 G2 approvals (2026-10-14)
+
+The operator merged PR #1 on 2026-10-14 at 20:29 CEST (18:29 UTC) and confirmed that the merge approves, as proposed:
+
+- the design in this document;
+- the initial rule pack `agentify-core@1.0.0`: its four blocking rules and the autonomy ceilings (A§12.4);
+- deviations D-1 to D-15 (A§25);
+- the starting values: error budgets 5 per tool, 8 per error class, 20 per run (A§10.3); incremental shrink bound 30% (A§8.6); disconnect grace period 15 s (A§8.5); from-scratch confirmation window 15 minutes (A§8.2). Starting values are tunable from measured retry and eval statistics; each change is recorded with its evidence.
+
+Branch protection on `main` is to be added at scaffolding, with the CI status checks (A§26.6).
 
 Not yet decided, because their capability is not in release 1: jurisdictions, first obligation catalog, reviewer qualifications, liability wording (§13.2.4).
 
@@ -131,7 +143,7 @@ Each choice names the requirement it serves. Versions are pinned in lockfiles at
 | Schemas | Pydantic v2 | Every artifact schema is a Pydantic model; JSON Schema is exported for contracts and tools (§12.1 layer 1) | — |
 | Agent framework | Pydantic AI 2.56 | Scripted-model seam (`FunctionModel`) that drives the real framework (§12.5B); step-wise `agent.iter()` for harness-owned cancellation (§6.3 long-session loop); `AgentRun.cancel()`; explicit Bedrock provider construction (§6.8); built-in Vercel AI and AG-UI stream adapters (§6.1) | Spike S1 (A§28) |
 | Streaming chat protocol | Vercel AI SDK UI message stream (data stream protocol v6), via Pydantic AI's `VercelAIAdapter` | Established, publicly specified, consumed by off-the-shelf chat UIs (§6.1, §7.8) | Adapter present (S1) |
-| Database | PostgreSQL (managed, EU: Fly Managed Postgres in `fra` if Fly confirms EU backup storage, otherwise AWS RDS in `eu-central-1`; A§28 O-1) with pooled connections | Concurrent writers, transactional admission and commit, row-level security (§11.3, §8.6) | Research R2 |
+| Database | PostgreSQL with pooled connections: **AWS RDS in `eu-central-1`** (OD-21); Fly Managed Postgres in `fra` only if Fly confirms EU backup storage in writing (A§28 O-1) | Concurrent writers, transactional admission and commit, row-level security (§11.3, §8.6) | Research R2 |
 | Migrations | Alembic for the database; registered pure functions for artifact schemas (A§6.10) | §11.7, §13.2.10 | — |
 | Durable queue | Postgres-backed queue (table + `SELECT … FOR UPDATE SKIP LOCKED`, leases) owned by the harness | Restart-safe, multi-worker, no extra infrastructure, same transaction as admission (§11.2) | — |
 | Object storage | AWS S3 `eu-central-1` (A§28 O-2), two physically separate buckets: `artifacts` and `runtime` | Shared across machines; versioned artifacts and runtime state physically separate (§6.5) | Research R2 |
@@ -1025,7 +1037,7 @@ Mechanizable catalog obligations (deferred capability) compile into rules of thi
 
 Five levels: coarse enough for consistent estimates (each level differs in *who acts* and *when a human sees the case*), fine enough for meaningful ceilings. **Decision class** is derived from the profile: `(decides_about_natural_persons, effect_reversibility, external_effect)`. The rule pack carries a ceiling table per decision class.
 
-### 12.4 Proposed initial rule pack `agentify-core@1.0.0` (operator approval required at G2)
+### 12.4 Initial rule pack `agentify-core@1.0.0` (approved by the operator 2026-10-14, A§1.1)
 
 **Blocking (four, each justified).** Reachability and termination are no longer a governance rule: they are part of validity (A§6.1 level 3), so a flow with unreachable or dead-end steps cannot commit at all.
 
@@ -1545,7 +1557,7 @@ The spike script and its output are kept under `spikes/2026-10-14-pydantic-ai/` 
 | R2.7 | 2026-10-14 | The Fly proxy closes connections idle for about 60 s; streams send heartbeats every 15 s | Community posts (not docs) |
 | R3.1 | 2026-10-14 | Claude Code (local 2.1.299) supports a Bedrock-format gateway with `ANTHROPIC_BEDROCK_BASE_URL` and `CLAUDE_CODE_SKIP_BEDROCK_AUTH`, holding no AWS credentials; managed `allowedProviders: ["customEndpoint"]` pins the endpoint (≥ 2.1.285) | Docs |
 | R3.2 | 2026-10-14 | Headless flags (`--bare`, `stream-json`, `dontAsk`, `--max-turns`, `--max-budget-usd`, `--resume`), `CLAUDE_CONFIG_DIR`, non-essential-traffic switches | Docs, local `--help` |
-| O-1 | — | **Where Fly Managed Postgres stores backups** is not documented. OD-3 requires EU backups. **Fly MPG is used only after Fly confirms EU backup storage in writing; otherwise the database is AWS RDS for PostgreSQL in `eu-central-1`** (same AWS account as Bedrock, reached over TLS from Fly's static egress addresses) | Open, operator follow-up |
+| O-1 | — | **Where Fly Managed Postgres stores backups** is not documented; OD-3 requires EU backups. **Decided (OD-21): AWS RDS for PostgreSQL in `eu-central-1` is the default**, reached over TLS from Fly's static egress addresses; Fly Managed Postgres replaces it only if Fly confirms EU backup storage in writing before deployment | Decided default; Fly confirmation optional |
 | O-2 | — | Tigris single-region buckets claim data stays in the region, but metadata location and data-processing terms are undocumented. **Object storage is S3 in `eu-central-1`** (contractual EU region, same account) | Decision |
 | O-3 | — | Whether the Machines API accepts `image@sha256:` on create | Open, implementation spike |
 | O-4 | — | Whether the Bedrock data-retention setting applies in every EU destination region of the inference profile | Open, AWS support question |
