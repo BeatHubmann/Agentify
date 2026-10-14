@@ -1,0 +1,5 @@
+id: spec_section
+path_pattern: "spec/(current|desired|constraints).json"
+schema_ref: "builtin:spec_section"
+write_checks: [spec.paragraph_ids_unique, spec.sources_grounded]
+gate_checks: [spec.paragraph_ids_unique, spec.sources_grounded, spec_section.complete]

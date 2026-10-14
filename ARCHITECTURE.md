@@ -174,9 +174,10 @@ backend/
     store/           Postgres repositories, blob store, revisions, run staging,
                      runtime-state store (separate module, separate bucket)
     harness/         admission, run state machine, queue, cancellation, gate, commit,
-                     verified rollback, sweeper, error budget, artifact locks
+                     verified rollback, sweeper, error budget, artifact locks, worker loop
+    editing/         user-edit batches: server-side anchors, 409 on a stale base, commit as a user revision
     agents/          router, subagent kinds, flow-authoring tools, profiling agent,
-                     contract agent; scripted-model seam
+                     contract agent; catalog building each kind's agent from its declared toolset
     llm/             provider abstraction, per-role model policy, budget ledger
     sandboxgw/       sandbox model gateway: Bedrock pass-through over llm/
     exchange/        sandbox exchange: per-job bundle download and result upload
@@ -247,6 +248,8 @@ run(id, process_id, kind, mode, state, base_revision_id, initiated_by, entry_poi
     lease_owner, lease_epoch, lease_expires_at,            -- fencing token (A§8.4)
     cancel_requested_at, stream_attached_until NULL,       -- durable disconnect detection (A§8.5)
     staged_paths TEXT[],                                   -- snapshot used by rollback verification
+    instructions TEXT,                                     -- what the router or API asked the run to do
+    parent_run_id NULL, result_text_scrubbed NULL,         -- router dispatch; a router turn's final text
     outcome, outcome_detail_scrubbed, error_budget_json, created_at, finished_at)
 run_staging(run_id, path, blob_sha256, schema_version, written_at)   -- the run's private writes
 blob_pin(engagement_id, blob_sha256, pinned_by_run, pinned_at)       -- protects blobs from GC (A§7.3)
@@ -256,7 +259,9 @@ job(id, queue, run_id, payload, state, attempts, lease_owner, lease_expires_at, 
 assessment_job(id, process_id, revision_key UNIQUE, commit_seq, state, lease_owner, lease_expires_at, …)  -- commit_seq orders jobs per process
 chat_message(process_id, seq, author_kind, author_id, run_id, content_scrubbed, created_at)  -- append-only
 inbox_item(item_id, version, process_id, parent_item_id, kind, category, status, options, body_scrubbed,
-           author_kind, author_id, created_at)   -- PK (item_id, version); a status change is a new version
+           metadata, author_kind, author_id, run_id, created_at)   -- PK (item_id, version); a status change is a new version
+router_continuation(id, process_id, child_run_id UNIQUE, created_at, consumed_by_run)
+           -- durable notice that a router-dispatched run ended; consumed by one follow-up router turn
 intent_confirmation(id, process_id, run_kind, scope, confirmed_by, created_at)   -- attributed human intent
 waiver(id, process_id, finding_key, revision_key, approver_id, justification_scrubbed,
        checked_authors UUID[], created_at)
@@ -546,7 +551,7 @@ class JudgmentScenario(BaseModel):
 
 class SpecTrace(BaseModel):            # grounding reference, checked by code (A§14.1)
     artifact: Literal["spec/specification.json"]; artifact_blob: ContentHash
-    section_id: str; paragraph_id: str; span: tuple[int, int]; quote_sha256: str
+    paragraph_id: str; quote: str         # the quote must occur in that paragraph (change C-1)
 
 class AssumptionTrace(BaseModel):
     assumption: NormalizedText
@@ -601,7 +606,7 @@ class SpecSection(BaseModel):          # spec/current.json, spec/desired.json, s
 class SpecParagraph(BaseModel):
     id: str                            # stable within the artifact, e.g. "cur-012"
     text: NormalizedText
-    sources: list[InputCitation]       # (input upload id, page or offset span, quote_sha256)
+    sources: list[InputCitation]       # (input path, verbatim quote); checked against the input by code
 
 class Specification(BaseModel):        # spec/specification.json, assembled by synthesis
     sections: list[SpecSection]        # exactly the three sections, in order
@@ -626,7 +631,7 @@ class ConformanceReport(BaseModel):    # conformance/report.json
     nodes: list[NodeConformance]       # passed | failed(cases, reasons) | not_testable(reason), judged results separate
 ```
 
-A citation is grounded when the cited quote's hash equals the hash of the cited span in the cited artifact blob. That check is code, so a fabricated citation fails validation (A§13, A§14.1).
+A citation is grounded when its quote occurs verbatim (whitespace-insensitive) in the cited input; for a contract case, in the cited specification paragraph. That check is code, so a fabricated citation fails validation (A§13, A§14.1). Character offsets are not used: models quote reliably and count offsets unreliably (change C-1, A§25.1).
 
 ### 6.12 Tool and HTTP interface contracts
 
@@ -832,7 +837,7 @@ The top-level agent of each chat turn is the **router**: a Pydantic AI agent who
 | `read_workspace(path)` | Read an artifact at the current head (merged view for flows) |
 | `load_skill(name)` | Inject the skill's full playbook (markdown) into the context |
 | `inbox_ask(category, question, options)` / `inbox_read(filter)` | The only way agents ask humans anything |
-| `dispatch_subagent(kind, instructions, mode)` | Calls `harness.admit` for a child run and **returns immediately** with its id; the child's live preview streams into the chat. When the child ends, the harness admits a **router continuation turn** (a new router run) with the child's outcome, so multi-step playbooks continue without any tool waiting (§8.5). A from-scratch `mode` on a non-empty flow returns `needs_confirmation` (A§8.2) |
+| `dispatch_subagent(kind, instructions, mode)` | Calls `harness.admit` for a child run and **returns immediately** with its id; the child's live preview streams into the chat. Only kinds named by a skill loaded in the same turn can be dispatched. When the child ends, `finish` (or the sweeper) records a durable `router_continuation` notice; the worker admits one **router follow-up turn** per process for all pending notices, consuming them in the admission transaction, so multi-step playbooks continue without any tool waiting (§8.5) and no notice is lost if a router turn is already active. A from-scratch `mode` over existing output returns `needs_confirmation` and creates a `confirmation` inbox item; only a human answer to it creates the intent the next dispatch uses (A§8.2) |
 | `dispatch_job(kind, params)` | Calls `harness.admit` for a background job; returns immediately with the job id (no waiting, §8.5) |
 
 The router has **no write tools**. A skill is text; it cannot grant a tool the router does not have (§6.2). Router output is chat text: it passes the secret gate and the verdict-phrase scanner (A§20) before it is stored or streamed. Off-topic requests are refused by default. A bounded general Q&A mode is a registered skill (`general-qa`) with a token cap and read-only tools (§8.9). Clarifying questions go only through `inbox_ask`. The router's instructions forbid asking in chat, but the enforcement is structural: only an inbox item can be answered, attributed and versioned, so a question asked in chat text has no effect on any artifact.
@@ -865,7 +870,7 @@ Write tools are constructed per run from the agent kind's declaration: each tool
 registry/
   phases/<phase>.yaml            id, order, label key, panel
   skills/<skill>.md              frontmatter: name, phase, description, agent_kinds, inbox_categories
-  agents/<kind>.yaml             prompt ref, model role, tools, input paths, output paths,
+  agents/<kind>.yaml             prompt ref, model role, toolset, input paths, output paths,
                                  gate thresholds, budgets, modes
   artifacts/<type>.yaml          path pattern, schema ref (a JSON Schema in registry/schemas/ for new types),
                                  diff kind, writer kinds, gate (declared checks from the check library,
@@ -1452,6 +1457,16 @@ All 32 hazards of §9 have a design answer now. Their pinning tests land with th
 | D-15 | Extension contract: a new artifact type is a declarative change (§6.2, §14) | Declarative for types whose checks come from the check library; a genuinely new kind of check needs one library function and its test | A check that does not exist cannot be declared; the library keeps such additions small, reviewed and reusable |
 
 There is no deviation from any §10 invariant; D-12 states how invariant 1's wording is read, because the brief's own behavior contract requires that reading.
+
+### 25.1 Changes to the signed-off design
+
+Changes made during governed development, each in the PR that implements it.
+
+| ID | Slice | Change | Reason |
+|---|---|---|---|
+| C-1 | 2b | Specification citations are `(input, verbatim quote)`, checked by containment, instead of an offset span with a quote hash (A§6.11) | Models copy text reliably but count characters unreliably; containment is just as deterministic and checkable |
+| C-2 | 2b | From-scratch runs of artifact-authoring kinds over existing output need the same attributed human intent as flow kinds (A§8.2) | Regenerating any agent artifact discards work; the same fail-closed rule applies, and corrupt artifacts are never silently regenerated |
+| C-3 | 2b | Router follow-up turns are triggered by durable `router_continuation` notices consumed in the admission transaction (A§9.1) | A follow-up admitted directly by a finishing child would be refused while another router turn is active, losing the notice |
 
 ---
 

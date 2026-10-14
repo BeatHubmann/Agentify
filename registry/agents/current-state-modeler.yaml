@@ -2,6 +2,10 @@
 id: current-state-modeler
 model_role: current-state-modeler
 prompt: current-state-modeler.md
+toolset: flow_authoring
+phase: process_design
+input_paths: [spec/specification.json]
+inbox_categories: [design]
 flow_mode: current
 output_path: flows/current/flow.json
 edit_layer_path: flows/current/edits.json

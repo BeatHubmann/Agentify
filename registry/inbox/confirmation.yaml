@@ -1,0 +1,4 @@
+# Requests for attributed human intent (A§8.2). Only a human answer can confirm.
+id: confirmation
+phase: process_design
+label_key: inbox.confirmation

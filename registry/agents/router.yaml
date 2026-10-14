@@ -1,0 +1,13 @@
+# The top-level agent of every chat turn (A§9.1): reads, loads skills, asks, dispatches; writes nothing.
+id: router
+model_role: router
+prompt: router.md
+toolset: router
+phase: intake
+modes: [incremental]
+inbox_categories: [spec-clarification, design, confirmation]
+budgets:
+  request_limit: 30
+  errors_per_tool: 5
+  errors_per_class: 8
+  errors_per_run: 20

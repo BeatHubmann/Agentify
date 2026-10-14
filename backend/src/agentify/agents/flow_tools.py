@@ -15,7 +15,7 @@ from agentify.domain.edits import EditLayer, item_hash
 from agentify.domain.envelope import FLOW_SCHEMA_VERSION, Corrupt, decode_flow, encode
 from agentify.domain.flow import Edge, Flow, FlowMode, Node
 from agentify.domain.validate import Violation, integrity
-from agentify.harness.ports import ArtifactLocks, StagingPort
+from agentify.harness.ports import ArtifactLocks, InboxPort, StagingPort
 
 FRAMEWORK_RETRIES = 1_000
 """Set far above Agentify's own error budgets so the harness's cumulative counter trips first."""
@@ -31,6 +31,8 @@ class FlowToolDeps:
     """Agent items the user locked (incremental mode); changing them is a correctable error."""
     lock_anchors: dict[str, str] = field(default_factory=dict)
     locks: ArtifactLocks = field(default_factory=ArtifactLocks)
+    inbox: InboxPort | None = None
+    inbox_categories: tuple[str, ...] = ()
     _cache: dict[str, Flow] = field(default_factory=dict)
 
 

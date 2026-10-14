@@ -146,6 +146,18 @@ class Workspace:
             raise KeyError(process_id)
         return None if row["revision_id"] is None else str(row["revision_id"])
 
+    async def list_paths(
+        self, process_id: str, prefix: str, revision_id: str | None = None
+    ) -> list[str]:
+        async with self.db.tx() as conn:
+            revision = (
+                revision_id
+                if revision_id is not None
+                else await self.head_revision(conn, process_id)
+            )
+            paths = await self.path_map(conn, revision)
+        return sorted(path for path in paths if path.startswith(prefix))
+
     async def read(
         self, process_id: str, path: str, revision_id: str | None = None
     ) -> bytes | None:
@@ -273,7 +285,10 @@ class Workspace:
             changed = {
                 p for p in set(head_map) | set(base_map) if head_map.get(p) != base_map.get(p)
             }
-            conflicts = sorted(changed & (set(staged) | semantic_inputs))
+            prefixes = tuple(i for i in semantic_inputs if i.endswith("/"))
+            conflicts = sorted(
+                p for p in changed if p in staged or p in semantic_inputs or p.startswith(prefixes)
+            )
             if conflicts:
                 raise BaseMovedConflict(conflicts)
             new_map = {**head_map, **staged}

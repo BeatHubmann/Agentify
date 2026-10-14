@@ -7,8 +7,10 @@ and verifies. A lost lease means another process owns the run: this executor sto
 
 import asyncio
 import contextlib
+import json
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from typing import Any
 
 import anyio
 from pydantic_ai import Agent
@@ -17,12 +19,16 @@ from pydantic_ai.messages import ModelRequest
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 
+from agentify import inbox
+from agentify.agents.artifact_tools import ArtifactToolDeps
 from agentify.agents.flow_tools import FlowToolDeps, lock_view
+from agentify.agents.router_tools import RouterDeps
 from agentify.domain.edits import EditLayer
 from agentify.domain.envelope import Corrupt, decode_edit_layer
-from agentify.harness import gate, runs
+from agentify.harness import artifact_gate, gate, runs
 from agentify.harness.budget import ErrorBudget, RunAbort
-from agentify.registry import AgentKind
+from agentify.harness.ports import DispatchResult
+from agentify.registry import AgentKind, ArtifactAgentKind, FlowAgentKind, Registry, RouterKind
 from agentify.secretgate import SecretFound
 from agentify.store.workspace import (
     AgentRunWriter,
@@ -32,6 +38,7 @@ from agentify.store.workspace import (
     Fence,
     LeaseLost,
     MissingBlob,
+    Validator,
     Workspace,
 )
 
@@ -51,6 +58,8 @@ class HarnessConfig:
     storage_timeout: float = 30.0
     """If the database or blob store does not answer within this time while a run is finishing,
     the executor stops trying; the lease runs out and the sweeper finishes the run (A§8.5)."""
+    prompt_version: str | None = None
+    """Recorded on every revision the run commits (A§9.5)."""
 
 
 class _Staging:
@@ -62,12 +71,9 @@ class _Staging:
         self._allowed = allowed
 
     async def read(self, path: str) -> bytes | None:
-        # A from-scratch run starts from an empty output, never from the previous flow (§6.3 item 5).
-        base = (
-            None
-            if self._claimed.mode == "from_scratch" and path in self._allowed
-            else self._claimed.base_revision_id
-        )
+        # A from-scratch run starts from an empty output, never from the previous one (§6.3 item 5).
+        from_scratch_output = self._claimed.mode == "from_scratch" and path in self._allowed
+        base = None if from_scratch_output else self._claimed.base_revision_id
         return await self._ws.read_staged_or_base(
             self._claimed.run_id, self._claimed.process_id, base, path
         )
@@ -76,6 +82,99 @@ class _Staging:
         if path not in self._allowed:
             raise PermissionError(f"{path} is not a declared output of this run")
         await self._ws.stage(self._claimed.fence, self._claimed.process_id, path, data)
+
+    async def list_paths(self, prefix: str) -> list[str]:
+        return await self._ws.list_paths(
+            self._claimed.process_id, prefix, self._claimed.base_revision_id
+        )
+
+
+class _HeadReader:
+    """The router's view: the live workspace head (it writes nothing)."""
+
+    def __init__(self, ws: Workspace, process_id: str) -> None:
+        self._ws = ws
+        self._process_id = process_id
+
+    async def read(self, path: str) -> bytes | None:
+        return await self._ws.read(self._process_id, path)
+
+    async def write(self, path: str, data: bytes) -> None:
+        raise PermissionError("the router has no write path")
+
+    async def list_paths(self, prefix: str) -> list[str]:
+        return await self._ws.list_paths(self._process_id, prefix)
+
+
+class _Inbox:
+    def __init__(self, ws: Workspace, registry: Registry, claimed: runs.ClaimedRun) -> None:
+        self._ws, self._registry, self._claimed = ws, registry, claimed
+
+    async def ask(self, category: str, question: str, options: list[str]) -> str:
+        return await inbox.ask(
+            self._ws,
+            self._registry,
+            process_id=self._claimed.process_id,
+            category=category,
+            question=question,
+            options=options,
+            run_id=self._claimed.run_id,
+        )
+
+    async def read(self, status: str | None) -> str:
+        found = await inbox.items(self._ws, self._claimed.process_id, status=status)
+        return json.dumps([asdict(item) for item in found], sort_keys=True, ensure_ascii=False)
+
+
+class _Dispatcher:
+    """Child runs go through admission like every other entry point (A§8.2, A§9.1)."""
+
+    def __init__(self, ws: Workspace, registry: Registry, claimed: runs.ClaimedRun) -> None:
+        self._ws, self._registry, self._claimed = ws, registry, claimed
+
+    async def dispatch(self, kind: str, mode: str, instructions: str) -> DispatchResult:
+        child = self._registry.agents.get(kind)
+        if child is None or mode not in ("from_scratch", "incremental"):
+            return DispatchResult("refused", detail=f"unknown kind or mode: {kind} {mode}")
+        process_id = self._claimed.process_id
+        confirmation = (
+            await runs.latest_confirmation(self._ws, process_id=process_id, run_kind=kind)
+            if mode == "from_scratch"
+            else None
+        )
+        try:
+            run_id = await runs.admit(
+                self._ws,
+                process_id=process_id,
+                kind=child,
+                mode=mode,  # type: ignore[arg-type]
+                initiated_by=self._claimed.initiated_by,
+                entry_point="router",
+                instructions=instructions,
+                parent_run_id=self._claimed.run_id,
+                intent_confirmation_id=confirmation,
+            )
+        except runs.AdmissionRefused as refused:
+            if refused.code in {"needs_confirmation", "confirmation_invalid"}:
+                item = await inbox.ask(
+                    self._ws,
+                    self._registry,
+                    process_id=process_id,
+                    category="confirmation",
+                    question=f"Regenerating {kind} from scratch would discard the current result. Confirm?",
+                    options=["confirm", "cancel"],
+                    run_id=self._claimed.run_id,
+                    kind="confirmation",
+                    metadata={"run_kind": kind},
+                )
+                return DispatchResult(
+                    "needs_confirmation", detail=f"asked the user (inbox item {item})"
+                )
+            return DispatchResult(
+                "already_running" if refused.code == "already_running" else "refused",
+                detail=str(refused),
+            )
+        return DispatchResult("admitted", run_id=run_id)
 
 
 @contextlib.asynccontextmanager
@@ -99,7 +198,7 @@ async def _lease_keeper(
 
 
 async def _edit_layer_at_base(
-    ws: Workspace, claimed: runs.ClaimedRun, kind: AgentKind
+    ws: Workspace, claimed: runs.ClaimedRun, kind: FlowAgentKind
 ) -> EditLayer:
     data = await ws.read(claimed.process_id, kind.edit_layer_path, claimed.base_revision_id)
     if data is None:
@@ -110,18 +209,67 @@ async def _edit_layer_at_base(
     return layer
 
 
+async def _deps(
+    ws: Workspace,
+    claimed: runs.ClaimedRun,
+    kind: AgentKind,
+    registry: Registry | None,
+    output_language: str,
+) -> Any:
+    staging = _Staging(ws, claimed, frozenset(kind.output_paths))
+    port = _Inbox(ws, registry, claimed) if registry is not None else None
+    if isinstance(kind, FlowAgentKind):
+        layer = (
+            await _edit_layer_at_base(ws, claimed, kind)
+            if claimed.mode == "incremental"
+            else EditLayer()
+        )
+        locked, anchors = lock_view(layer)
+        return FlowToolDeps(
+            staging=staging,
+            output_path=kind.output_path,
+            flow_mode=kind.flow_mode,
+            output_language=output_language,
+            locked=locked,
+            lock_anchors=anchors,
+            inbox=port,
+            inbox_categories=kind.inbox_categories,
+        )
+    if registry is None:
+        raise ValueError(f"{kind.id} needs the registry")
+    if isinstance(kind, ArtifactAgentKind):
+        outputs = {o.path: (o, registry.artifact_types[o.artifact_type]) for o in kind.outputs}
+        return ArtifactToolDeps(
+            staging=staging,
+            outputs=outputs,
+            readable_prefixes=kind.input_paths,
+            output_language=output_language,
+            from_scratch=claimed.mode == "from_scratch",
+            inbox=port,
+            inbox_categories=kind.inbox_categories,
+        )
+    return RouterDeps(
+        workspace=_HeadReader(ws, claimed.process_id),
+        dispatcher=_Dispatcher(ws, registry, claimed),
+        registry=registry,
+        inbox=port,
+        inbox_categories=kind.inbox_categories,
+    )
+
+
 async def _drive_agent(
     ws: Workspace,
     claimed: runs.ClaimedRun,
     kind: AgentKind,
     *,
-    agent: Agent[FlowToolDeps, str],
+    agent: Agent[Any, str],
     model: Model,
     prompt: str,
-    deps: FlowToolDeps,
+    deps: Any,
     lost: asyncio.Event,
-) -> tuple[Outcome | None, str | None]:
-    """Run the agent step by step; between steps, count retries and check the stop signals."""
+) -> tuple[Outcome | None, str | None, str | None]:
+    """Run the agent step by step; between steps, count retries and check the stop signals.
+    Returns (stop outcome, finish reason, final text)."""
     budget = ErrorBudget(
         kind.budgets.errors_per_tool, kind.budgets.errors_per_class, kind.budgets.errors_per_run
     )
@@ -141,11 +289,42 @@ async def _drive_agent(
                     agent_run.cancel()
                     break
             if stop is None and agent_run.result is not None:
-                return None, agent_run.result.response.finish_reason
+                return None, agent_run.result.response.finish_reason, str(agent_run.result.output)
     except RunCancelled:
         if stop is None:
             raise
-    return stop, None
+    return stop, None, None
+
+
+async def _gate(
+    ws: Workspace,
+    claimed: runs.ClaimedRun,
+    kind: AgentKind,
+    registry: Registry | None,
+    finish_reason: str | None,
+) -> gate.GateResult:
+    incremental = claimed.mode == "incremental"
+    if isinstance(kind, FlowAgentKind):
+        return await gate.check(
+            ws,
+            run_id=claimed.run_id,
+            process_id=claimed.process_id,
+            kind=kind,
+            incremental=incremental,
+            base_revision_id=claimed.base_revision_id,
+            finish_reason=finish_reason,
+        )
+    if isinstance(kind, ArtifactAgentKind) and registry is not None:
+        return await artifact_gate.check(
+            ws,
+            run_id=claimed.run_id,
+            process_id=claimed.process_id,
+            kind=kind,
+            registry=registry,
+            incremental=incremental,
+            finish_reason=finish_reason,
+        )
+    return gate.GateResult(True, unchanged=True)  # the router writes nothing
 
 
 async def _loop(
@@ -153,24 +332,15 @@ async def _loop(
     claimed: runs.ClaimedRun,
     kind: AgentKind,
     *,
-    agent: Agent[FlowToolDeps, str],
+    agent: Agent[Any, str],
     model: Model,
     prompt: str,
     output_language: str,
     lost: asyncio.Event,
+    registry: Registry | None,
 ) -> Outcome:
-    incremental = claimed.mode == "incremental"
-    layer = await _edit_layer_at_base(ws, claimed, kind) if incremental else EditLayer()
-    locked, anchors = lock_view(layer)
-    deps = FlowToolDeps(
-        staging=_Staging(ws, claimed, frozenset({kind.output_path})),
-        output_path=kind.output_path,
-        flow_mode=kind.flow_mode,
-        output_language=output_language,
-        locked=locked,
-        lock_anchors=anchors,
-    )
-    stop, finish_reason = await _drive_agent(
+    deps = await _deps(ws, claimed, kind, registry, output_language)
+    stop, finish_reason, text = await _drive_agent(
         ws, claimed, kind, agent=agent, model=model, prompt=prompt, deps=deps, lost=lost
     )
     if stop is not None:
@@ -179,15 +349,9 @@ async def _loop(
         return Outcome("cancelled")  # a cancelled run never reaches the gate
     if not await runs.move_to_gating(ws, claimed.fence):
         return Outcome("lease_lost")
-    result = await gate.check(
-        ws,
-        run_id=claimed.run_id,
-        process_id=claimed.process_id,
-        kind=kind,
-        incremental=incremental,
-        base_revision_id=claimed.base_revision_id,
-        finish_reason=finish_reason,
-    )
+    if isinstance(kind, RouterKind) and text is not None:
+        await runs.record_result(ws, claimed.fence, text)
+    result = await _gate(ws, claimed, kind, registry, finish_reason)
     if result.unchanged:
         return Outcome("unchanged")
     if not result.passed:
@@ -202,31 +366,54 @@ async def finish(
     claimed: runs.ClaimedRun,
     kind: AgentKind,
     outcome: Outcome,
+    *,
     config: HarnessConfig | None = None,
+    registry: Registry | None = None,
 ) -> str:
     """The single place a run ends. Returns the final run state, or `left_for_sweeper` when
     storage did not answer in time (the run then ends when its lease expires)."""
     final = "left_for_sweeper"
     with anyio.move_on_after((config or HarnessConfig()).storage_timeout):
-        final = await _finish(ws, claimed, kind, outcome)
+        final = await _finish(
+            ws, claimed, kind, outcome, config=config or HarnessConfig(), registry=registry
+        )
+        if final in runs.TERMINAL_STATES and claimed.parent_run_id is not None:
+            await runs.record_continuation(ws, claimed.run_id)
     return final
 
 
-async def _commit(ws: Workspace, claimed: runs.ClaimedRun, kind: AgentKind) -> Outcome:
+async def _validator(
+    ws: Workspace, claimed: runs.ClaimedRun, kind: AgentKind, registry: Registry | None
+) -> Validator:
+    if isinstance(kind, FlowAgentKind):
+        base_flow = await gate.base_flow_of(ws, claimed.process_id, claimed.base_revision_id, kind)
+        return gate.commit_validator(
+            kind, incremental=claimed.mode == "incremental", base_flow=base_flow
+        )
+    if isinstance(kind, ArtifactAgentKind) and registry is not None:
+        return artifact_gate.commit_validator(kind, registry)
+    raise ValueError(f"{kind.id} has no outputs to commit")
+
+
+async def _commit(
+    ws: Workspace,
+    claimed: runs.ClaimedRun,
+    kind: AgentKind,
+    config: HarnessConfig,
+    registry: Registry | None,
+) -> Outcome:
     """Commit a gated run. Returns `committed`, `lease_lost`, or the failure to roll back with."""
-    base_flow = await gate.base_flow_of(ws, claimed.process_id, claimed.base_revision_id, kind)
     try:
         await ws.commit(
             process_id=claimed.process_id,
             writer=AgentRunWriter(claimed.run_id, claimed.initiated_by, kind.id),
             base_revision_id=claimed.base_revision_id,
             staged=await ws.staged(claimed.run_id),
-            semantic_inputs=frozenset(),
-            validate=gate.commit_validator(
-                kind, incremental=claimed.mode == "incremental", base_flow=base_flow
-            ),
+            semantic_inputs=frozenset(kind.input_paths),
+            validate=await _validator(ws, claimed, kind, registry),
             fence=claimed.fence,
-            message=f"run {kind.id} {claimed.run_id}: {kind.output_path}",
+            message=f"run {kind.id} {claimed.run_id}: {', '.join(kind.output_paths)}",
+            prompt_version=config.prompt_version,
         )
     except LeaseLost:
         return Outcome("lease_lost")
@@ -240,12 +427,18 @@ async def _commit(ws: Workspace, claimed: runs.ClaimedRun, kind: AgentKind) -> O
 
 
 async def _finish(
-    ws: Workspace, claimed: runs.ClaimedRun, kind: AgentKind, outcome: Outcome
+    ws: Workspace,
+    claimed: runs.ClaimedRun,
+    kind: AgentKind,
+    outcome: Outcome,
+    *,
+    config: HarnessConfig,
+    registry: Registry | None,
 ) -> str:
     if outcome.kind == "unchanged" and await runs.mark_unchanged(ws, claimed.fence):
         return "unchanged"
     if outcome.kind == "gate_passed":
-        outcome = await _commit(ws, claimed, kind)
+        outcome = await _commit(ws, claimed, kind, config, registry)
     if outcome.kind in {"committed", "lease_lost"}:
         return "committed" if outcome.kind == "committed" else "abandoned"
     try:
@@ -264,11 +457,12 @@ async def execute(
     claimed: runs.ClaimedRun,
     kind: AgentKind,
     *,
-    agent: Agent[FlowToolDeps, str],
+    agent: Agent[Any, str],
     model: Model,
     prompt: str,
     output_language: str = "en",
     config: HarnessConfig | None = None,
+    registry: Registry | None = None,
 ) -> str:
     config = config or HarnessConfig()
     lost = asyncio.Event()
@@ -284,10 +478,18 @@ async def execute(
                 prompt=prompt,
                 output_language=output_language,
                 lost=lost,
+                registry=registry,
             )
     except asyncio.CancelledError:
         with anyio.CancelScope(shield=True):
-            await finish(ws, claimed, kind, Outcome("cancelled", "runtime cancellation"), config)
+            await finish(
+                ws,
+                claimed,
+                kind,
+                Outcome("cancelled", "runtime cancellation"),
+                config=config,
+                registry=registry,
+            )
         raise
     except RunAbort as exc:
         outcome = Outcome("aborted", f"{exc.reason}: {exc.detail}")
@@ -300,5 +502,5 @@ async def execute(
     except Exception as exc:  # noqa: BLE001 - any failure, including provider errors, ends in rollback
         outcome = Outcome("aborted", type(exc).__name__)
     with anyio.CancelScope(shield=True):
-        final = await finish(ws, claimed, kind, outcome, config)
+        final = await finish(ws, claimed, kind, outcome, config=config, registry=registry)
     return final

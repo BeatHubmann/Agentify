@@ -9,7 +9,7 @@ from agentify.domain.edits import EditLayer, item_hash, merge
 from agentify.domain.envelope import Corrupt, decode_edit_layer, decode_flow
 from agentify.domain.flow import Edge, Flow, Node
 from agentify.domain.validate import Violation, flow_invariants
-from agentify.registry import AgentKind
+from agentify.registry import FlowAgentKind
 from agentify.store.workspace import PathReader, Validator, Workspace
 
 TRUNCATED_FINISH_REASONS = frozenset({"length"})
@@ -45,7 +45,7 @@ def lock_violations(staged: Flow, layer: EditLayer) -> list[Violation]:
 
 
 async def validate_flow_state(
-    reader: PathReader, kind: AgentKind, *, incremental: bool, base_flow: Flow | None
+    reader: PathReader, kind: FlowAgentKind, *, incremental: bool, base_flow: Flow | None
 ) -> list[Violation]:
     """Invariants of the merged flow in a path map; shared by the gate and the commit."""
     data = await reader.read(kind.output_path)
@@ -71,7 +71,7 @@ async def check(
     *,
     run_id: str,
     process_id: str,
-    kind: AgentKind,
+    kind: FlowAgentKind,
     incremental: bool,
     base_revision_id: str | None,
     finish_reason: str | None,
@@ -99,7 +99,7 @@ async def check(
     return GateResult(not violations, violations=tuple(violations))
 
 
-async def _base_flow(reader: PathReader, kind: AgentKind) -> Flow | None:
+async def _base_flow(reader: PathReader, kind: FlowAgentKind) -> Flow | None:
     data = await reader.read(kind.output_path)
     if data is None:
         return None
@@ -107,7 +107,9 @@ async def _base_flow(reader: PathReader, kind: AgentKind) -> Flow | None:
     return None if isinstance(decoded, Corrupt) else decoded
 
 
-def commit_validator(kind: AgentKind, *, incremental: bool, base_flow: Flow | None) -> Validator:
+def commit_validator(
+    kind: FlowAgentKind, *, incremental: bool, base_flow: Flow | None
+) -> Validator:
     async def validate(reader: PathReader, _changed: frozenset[str]) -> list[Violation]:
         return await validate_flow_state(reader, kind, incremental=incremental, base_flow=base_flow)
 
@@ -115,7 +117,7 @@ def commit_validator(kind: AgentKind, *, incremental: bool, base_flow: Flow | No
 
 
 async def base_flow_of(
-    ws: Workspace, process_id: str, base_revision_id: str | None, kind: AgentKind
+    ws: Workspace, process_id: str, base_revision_id: str | None, kind: FlowAgentKind
 ) -> Flow | None:
     async with ws.db.tx() as conn:
         engagement_id = await ws.engagement_of(conn, process_id)
