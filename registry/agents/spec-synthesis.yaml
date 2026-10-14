@@ -1,0 +1,18 @@
+# Assembles the three sections into the specification (A§9.2). Reads the sections and the inputs.
+id: spec-synthesis
+model_role: synthesis
+prompt: spec-synthesis.md
+toolset: artifact_authoring
+phase: specification
+modes: [from_scratch, incremental]
+input_paths: ["inputs/", spec/current.json, spec/desired.json, spec/constraints.json]
+inbox_categories: [spec-clarification]
+outputs:
+  - path: spec/specification.json
+    artifact_type: specification
+    initial: {sections: []}
+budgets:
+  request_limit: 40
+  errors_per_tool: 5
+  errors_per_class: 8
+  errors_per_run: 20

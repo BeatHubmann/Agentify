@@ -1,5 +1,6 @@
 """Run records: admission, claiming, leases and cancellation (A§8.2 to A§8.5)."""
 
+import json
 import uuid
 from dataclasses import dataclass
 from typing import Literal
@@ -9,7 +10,8 @@ from psycopg import errors
 from agentify.domain.edits import EditLayer, merge
 from agentify.domain.envelope import Corrupt, decode_edit_layer, decode_flow
 from agentify.domain.flow import Flow
-from agentify.registry import AgentKind
+from agentify.registry import AgentKind, ArtifactAgentKind, FlowAgentKind
+from agentify.secretgate import SecretFound
 from agentify.store.workspace import Conn, Fence, Workspace
 
 Mode = Literal["from_scratch", "incremental"]
@@ -34,6 +36,7 @@ class ClaimedRun:
     initiated_by: str
     fence: Fence
     instructions: str = ""
+    parent_run_id: str | None = None
 
 
 async def _read_at(
@@ -64,48 +67,121 @@ async def admit(
     entry_point: str,
     intent_confirmation_id: str | None = None,
     instructions: str = "",
+    parent_run_id: str | None = None,
 ) -> str:
     """The only function that creates runs (A§8.2). Every entry point calls it."""
+    async with ws.db.tx() as conn:
+        return await admit_in(
+            ws,
+            conn,
+            process_id=process_id,
+            kind=kind,
+            mode=mode,
+            initiated_by=initiated_by,
+            entry_point=entry_point,
+            intent_confirmation_id=intent_confirmation_id,
+            instructions=instructions,
+            parent_run_id=parent_run_id,
+        )
+
+
+async def _check_flow_admission(
+    ws: Workspace, conn: Conn, *, process_id: str, kind: FlowAgentKind, mode: Mode, base: str | None
+) -> bool:
+    """Fail-closed checks for flow kinds. Returns whether a from-scratch run has something to lose."""
+    flow_data = await _read_at(ws, conn, process_id, base, kind.output_path)
+    layer_data = await _read_at(ws, conn, process_id, base, kind.edit_layer_path)
+    layer: EditLayer | Corrupt = (
+        EditLayer() if layer_data is None else decode_edit_layer(layer_data)
+    )
+    if mode == "from_scratch":
+        return await _has_something_to_lose(flow_data, layer)
+    if isinstance(layer, Corrupt):
+        raise AdmissionRefused("edit_layer_unreadable", layer.reason)
+    flow = Flow(mode=kind.flow_mode) if flow_data is None else decode_flow(flow_data)
+    if isinstance(flow, Corrupt):
+        raise AdmissionRefused("flow_corrupt", flow.reason)
+    ghosts = merge(flow, layer).report.ghost_locks
+    if ghosts:
+        raise AdmissionRefused("ghost_locks", ", ".join(ghosts))
+    return False
+
+
+async def _check_artifact_admission(
+    ws: Workspace,
+    conn: Conn,
+    *,
+    process_id: str,
+    kind: ArtifactAgentKind,
+    mode: Mode,
+    base: str | None,
+) -> bool:
+    existing = {
+        path: await _read_at(ws, conn, process_id, base, path) for path in kind.output_paths
+    }
+    if mode == "from_scratch":
+        return any(data is not None for data in existing.values())
+    for path, data in existing.items():
+        if data is not None:
+            try:
+                json.loads(data)
+            except ValueError as exc:
+                raise AdmissionRefused("output_corrupt", path) from exc
+    return False
+
+
+async def admit_in(
+    ws: Workspace,
+    conn: Conn,
+    *,
+    process_id: str,
+    kind: AgentKind,
+    mode: Mode,
+    initiated_by: str,
+    entry_point: str,
+    intent_confirmation_id: str | None = None,
+    instructions: str = "",
+    parent_run_id: str | None = None,
+) -> str:
+    """Admission inside a caller's transaction (follow-up turns consume their notices atomically)."""
     if mode not in kind.modes:
         raise AdmissionRefused("mode_not_supported", mode)
     run_id = f"run_{uuid.uuid4().hex}"
-    async with ws.db.tx() as conn:
-        process = await (
-            await conn.execute("SELECT quarantined_at FROM process WHERE id = %s", (process_id,))
-        ).fetchone()
-        if process is None:
-            raise AdmissionRefused("unknown_process", process_id)
-        if process["quarantined_at"] is not None:
-            raise AdmissionRefused("process_quarantined")
-        base = await ws.head_revision(conn, process_id)
-        flow_data = await _read_at(ws, conn, process_id, base, kind.output_path)
-        layer_data = await _read_at(ws, conn, process_id, base, kind.edit_layer_path)
-        layer: EditLayer | Corrupt = (
-            EditLayer() if layer_data is None else decode_edit_layer(layer_data)
+    process = await (
+        await conn.execute("SELECT quarantined_at FROM process WHERE id = %s", (process_id,))
+    ).fetchone()
+    if process is None:
+        raise AdmissionRefused("unknown_process", process_id)
+    if process["quarantined_at"] is not None:
+        raise AdmissionRefused("process_quarantined")
+    base = await ws.head_revision(conn, process_id)
+    if isinstance(kind, FlowAgentKind):
+        something_to_lose = await _check_flow_admission(
+            ws, conn, process_id=process_id, kind=kind, mode=mode, base=base
         )
-        if mode == "incremental":
-            if isinstance(layer, Corrupt):
-                raise AdmissionRefused("edit_layer_unreadable", layer.reason)
-            flow = Flow(mode=kind.flow_mode) if flow_data is None else decode_flow(flow_data)
-            if isinstance(flow, Corrupt):
-                raise AdmissionRefused("flow_corrupt", flow.reason)
-            ghosts = merge(flow, layer).report.ghost_locks
-            if ghosts:
-                raise AdmissionRefused("ghost_locks", ", ".join(ghosts))
-        elif await _has_something_to_lose(flow_data, layer):
-            await _consume_intent(
-                conn,
-                confirmation_id=intent_confirmation_id,
-                process_id=process_id,
-                kind=kind.id,
-                head=base,
-                run_id=run_id,
-            )
-        try:
+    elif isinstance(kind, ArtifactAgentKind):
+        something_to_lose = await _check_artifact_admission(
+            ws, conn, process_id=process_id, kind=kind, mode=mode, base=base
+        )
+    else:
+        something_to_lose = False
+    if something_to_lose:
+        await _consume_intent(
+            conn,
+            confirmation_id=intent_confirmation_id,
+            process_id=process_id,
+            kind=kind.id,
+            head=base,
+            run_id=run_id,
+        )
+    try:
+        async with (
+            conn.transaction()
+        ):  # a savepoint, so a refusal leaves the caller's transaction usable
             await conn.execute(
                 """INSERT INTO run (id, process_id, kind, mode, state, base_revision_id, initiated_by,
-                                    entry_point, intent_confirmation_id, instructions)
-                   VALUES (%s, %s, %s, %s, 'admitted', %s, %s, %s, %s, %s)""",
+                                    entry_point, intent_confirmation_id, instructions, parent_run_id)
+                   VALUES (%s, %s, %s, %s, 'admitted', %s, %s, %s, %s, %s, %s)""",
                 (
                     run_id,
                     process_id,
@@ -114,16 +190,17 @@ async def admit(
                     base,
                     initiated_by,
                     entry_point,
-                    intent_confirmation_id,
+                    intent_confirmation_id if something_to_lose else None,
                     instructions,
+                    parent_run_id,
                 ),
             )
-        except errors.UniqueViolation as exc:
-            raise AdmissionRefused("already_running", kind.id) from exc
-        await conn.execute(
-            "INSERT INTO job (id, queue, run_id) VALUES (%s, %s, %s)",
-            (f"job_{uuid.uuid4().hex}", kind.id, run_id),
-        )
+    except errors.UniqueViolation as exc:
+        raise AdmissionRefused("already_running", kind.id) from exc
+    await conn.execute(
+        "INSERT INTO job (id, queue, run_id) VALUES (%s, %s, %s)",
+        (f"job_{uuid.uuid4().hex}", kind.id, run_id),
+    )
     return run_id
 
 
@@ -190,7 +267,7 @@ async def claim(
                  lease_expires_at = now() + make_interval(secs => %s)
                WHERE id = %s AND state = 'admitted'
                RETURNING id, process_id, kind, mode, base_revision_id, initiated_by, lease_epoch,
-                         instructions""",
+                         instructions, parent_run_id""",
                 (owner, lease_seconds, row["run_id"]),
             )
         ).fetchone()
@@ -209,6 +286,7 @@ async def claim(
         initiated_by=str(run["initiated_by"]),
         fence=Fence(str(run["id"]), owner, int(str(run["lease_epoch"]))),
         instructions=str(run["instructions"]),
+        parent_run_id=None if run["parent_run_id"] is None else str(run["parent_run_id"]),
     )
 
 
@@ -269,3 +347,91 @@ async def run_state(ws: Workspace, run_id: str) -> dict[str, object]:
     if row is None:
         raise KeyError(run_id)
     return dict(row)
+
+
+async def latest_confirmation(ws: Workspace, *, process_id: str, run_kind: str) -> str | None:
+    """The newest unconsumed, fresh confirmation a human gave for this process and kind, if any."""
+    async with ws.db.tx() as conn:
+        row = await (
+            await conn.execute(
+                """SELECT id FROM intent_confirmation
+               WHERE process_id = %s AND run_kind = %s AND consumed_by_run IS NULL
+                 AND created_at > now() - make_interval(mins => %s)
+               ORDER BY created_at DESC LIMIT 1""",
+                (process_id, run_kind, INTENT_WINDOW_MINUTES),
+            )
+        ).fetchone()
+    return None if row is None else str(row["id"])
+
+
+async def record_result(ws: Workspace, fence: Fence, text: str) -> None:
+    """Store a run's final text (router turns). Text that the secret gate refuses is withheld."""
+    try:
+        ws.gate.check_bytes(text.encode("utf-8"), where="run result")
+    except SecretFound:
+        text = "[withheld: the secret gate refused this text]"
+    async with ws.db.tx() as conn:
+        await conn.execute(
+            "UPDATE run SET result_text_scrubbed = %s WHERE id = %s AND lease_owner = %s AND lease_epoch = %s",
+            (text, fence.run_id, fence.owner, fence.epoch),
+        )
+
+
+async def record_continuation(ws: Workspace, run_id: str) -> None:
+    """When a router-dispatched run ends, leave a durable notice for a router follow-up turn."""
+    async with ws.db.tx() as conn:
+        await conn.execute(
+            """INSERT INTO router_continuation (id, process_id, child_run_id)
+               SELECT %s, process_id, id FROM run
+               WHERE id = %s AND parent_run_id IS NOT NULL
+                 AND state IN ('committed', 'unchanged', 'rolled_back', 'rollback_failed')
+               ON CONFLICT (child_run_id) DO NOTHING""",
+            (f"cont_{uuid.uuid4().hex}", run_id),
+        )
+
+
+async def admit_router_followups(ws: Workspace, router: AgentKind) -> list[str]:
+    """Admit one router turn per process with unconsumed notices, consuming them atomically."""
+    admitted: list[str] = []
+    async with ws.db.tx() as conn:
+        processes = await (
+            await conn.execute(
+                "SELECT DISTINCT process_id FROM router_continuation WHERE consumed_by_run IS NULL"
+            )
+        ).fetchall()
+    for row in processes:
+        process_id = str(row["process_id"])
+        try:
+            async with ws.db.tx() as conn:
+                notices = await (
+                    await conn.execute(
+                        """SELECT c.id, r.kind, r.id AS child, r.state, r.outcome FROM router_continuation c
+                       JOIN run r ON r.id = c.child_run_id
+                       WHERE c.process_id = %s AND c.consumed_by_run IS NULL
+                       ORDER BY c.created_at FOR UPDATE OF c SKIP LOCKED""",
+                        (process_id,),
+                    )
+                ).fetchall()
+                if not notices:
+                    continue
+                summary = "; ".join(
+                    f"{n['kind']} {n['child']}: {n['state']} ({n['outcome']})" for n in notices
+                )
+                run_id = await admit_in(
+                    ws,
+                    conn,
+                    process_id=process_id,
+                    kind=router,
+                    mode="incremental",
+                    initiated_by="system",
+                    entry_point="router_followup",
+                    instructions=f"Dispatched runs ended: {summary}.",
+                )
+                await conn.execute(
+                    "UPDATE router_continuation SET consumed_by_run = %s WHERE id = ANY(%s)",
+                    (run_id, [str(n["id"]) for n in notices]),
+                )
+                admitted.append(run_id)
+        except AdmissionRefused:
+            continue  # a router turn is active; the notices wait for the next pass
+    return admitted
