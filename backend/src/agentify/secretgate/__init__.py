@@ -64,6 +64,15 @@ class SecretGate:
                 return rule
         return None
 
+    def redact_text(self, text: str) -> Scrubbed[str]:
+        """For logs, events, chat and HTTP bodies: matches are replaced, the rest kept (A§18.2)."""
+        data = text.encode("utf-8")
+        for form in sorted(self._known, key=len, reverse=True):
+            data = data.replace(form, b"[REDACTED:known-value]")
+        for rule, pattern in _PATTERNS.items():
+            data = pattern.sub(f"[REDACTED:{rule}]".encode(), data)
+        return Scrubbed(data.decode("utf-8", errors="replace"), _GATE_TOKEN)
+
     def check_bytes(self, data: bytes, where: str) -> Scrubbed[bytes]:
         """For artifacts: a hit fails the write (content must not be silently altered)."""
         rule = self._find(data)

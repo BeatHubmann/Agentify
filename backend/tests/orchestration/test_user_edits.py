@@ -578,3 +578,59 @@ def test_no_agent_kind_can_write_the_user_layer(registry: Registry) -> None:
         if path in user_paths or user_layer.match(path)
     ]
     assert (writers, len(registry.agents) > 1) == ([], True)
+
+
+async def test_the_edit_api_keeps_container_arity_and_accepts_an_atomic_replacement(
+    workspace: Workspace, registry: Registry, process_id: str
+) -> None:
+    def node(
+        i: str, kind: str = "step", execution: str = "human", parent: str | None = None
+    ) -> Step:
+        fields = {"id": i, "label": i, "kind": kind, "execution": execution}
+        return Step(
+            calls=[("add_node", fields if parent is None else {**fields, "parent": parent})]
+        )
+
+    def link(a: str, b: str) -> Step:
+        return Step(calls=[("add_edge", {"id": f"e-{a}-{b}", "source": a, "target": b})])
+
+    build = [
+        node("in"),
+        node("decide", "actor", "ai"),
+        node("c1", "task", "ai", "decide"),
+        node("c2", "task", "ai", "decide"),
+        node("out"),
+        link("in", "decide"),
+        link("decide", "out"),
+        link("c1", "c2"),
+        Step(text="ok"),
+    ]
+    assert (await run_once(workspace, registry, process_id, Script(build)))[1] == "committed"
+    with pytest.raises(EditRejected) as below_two:
+        await edit(
+            workspace, registry, process_id, EditBatch(patches=(PatchRequest("remove_node", "c2"),))
+        )
+    replacement = EditBatch(
+        patches=(
+            PatchRequest("remove_node", "c2"),
+            PatchRequest(
+                "add_node",
+                None,
+                {
+                    "id": USER_NODE,
+                    "label": "c2 (user)",
+                    "kind": "task",
+                    "execution": "ai",
+                    "parent": "decide",
+                },
+            ),
+        )
+    )
+    await edit(workspace, registry, process_id, replacement)
+    flow = await head_flow(workspace, process_id)
+    assert flow is not None
+    merged = merge(flow, await edit_layer(workspace, process_id)).flow
+    assert (
+        "container_too_few_children" in {v.code for v in below_two.value.violations},
+        sorted(n.id for n in merged.nodes if n.parent == "decide"),
+    ) == (True, ["c1", USER_NODE])

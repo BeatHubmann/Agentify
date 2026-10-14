@@ -18,14 +18,20 @@ def upgrade(admin_url: str) -> None:
     command.upgrade(config, "head")
 
 
-def create_application_role(admin_url: str, role: str, password: str) -> None:
-    """Create the least-privileged application role and apply every migration's grants."""
+def create_application_role(
+    admin_url: str, role: str, password: str, *, bypass_rls: bool = False
+) -> None:
+    """Create a least-privileged application role and apply every migration's grants.
+
+    The worker role bypasses row-level security (it runs every engagement's work); the API role
+    does not, so its queries see only the engagements set for the transaction."""
+    create = (
+        "CREATE ROLE {} LOGIN BYPASSRLS PASSWORD {}"
+        if bypass_rls
+        else "CREATE ROLE {} LOGIN PASSWORD {}"
+    )
     with psycopg.connect(admin_url.replace("postgresql+psycopg://", "postgresql://")) as connection:
-        connection.execute(
-            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
-                sql.Identifier(role), sql.Literal(password)
-            )
-        )
+        connection.execute(sql.SQL(create).format(sql.Identifier(role), sql.Literal(password)))
         for path in sorted((MIGRATIONS / "versions").glob("*.py")):
             spec = importlib.util.spec_from_file_location(path.stem, path)
             if spec is None or spec.loader is None:

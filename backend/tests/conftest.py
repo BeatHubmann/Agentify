@@ -17,7 +17,9 @@ from agentify.store.db import Database
 from agentify.store.migrate import create_application_role, upgrade
 from agentify.store.workspace import Workspace
 
-APP_ROLE = "agentify_app"
+APP_ROLE = "agentify_app"  # the worker role: bypasses row-level security by design
+API_ROLE = "agentify_api"  # the API role: row-level security applies
+API_PASSWORD = "api-password-for-tests"  # throwaway container credential
 APP_PASSWORD = "app-password-for-tests"  # throwaway container credential
 BUCKET = "artifacts"
 REGISTRY_ROOT = Path(__file__).resolve().parents[2] / "registry"
@@ -30,6 +32,7 @@ POSTGRES_IMAGE = "postgres:17-alpine"
 @dataclass(frozen=True)
 class Infra:
     app_conninfo: str
+    api_conninfo: str
     admin_conninfo: str
     s3_endpoint: str
     s3_access_key: str
@@ -45,7 +48,8 @@ def infra() -> Iterator[Infra]:
     ):
         admin_url = pg.get_connection_url()
         upgrade(admin_url)
-        create_application_role(admin_url, APP_ROLE, APP_PASSWORD)
+        create_application_role(admin_url, APP_ROLE, APP_PASSWORD, bypass_rls=True)
+        create_application_role(admin_url, API_ROLE, API_PASSWORD)
         host, port, db = pg.get_container_host_ip(), pg.get_exposed_port(5432), pg.dbname
         config = minio.get_config()
         endpoint = f"http://{config['endpoint']}"
@@ -58,6 +62,7 @@ def infra() -> Iterator[Infra]:
         ).create_bucket(Bucket=BUCKET)
         yield Infra(
             app_conninfo=f"host={host} port={port} dbname={db} user={APP_ROLE} password={APP_PASSWORD}",
+            api_conninfo=f"host={host} port={port} dbname={db} user={API_ROLE} password={API_PASSWORD}",
             admin_conninfo=admin_url.replace("postgresql+psycopg://", "postgresql://"),
             s3_endpoint=endpoint,
             s3_access_key=config["access_key"],
