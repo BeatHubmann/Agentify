@@ -6,7 +6,7 @@ import logging
 import structlog
 
 from agentify.observability import configure_logging
-from agentify.secretgate import SecretGate
+from tests.support.gates import make_gate
 
 CANARY = "canary-credential-0123456789"
 
@@ -17,7 +17,7 @@ def _fail() -> None:
 
 def test_structlog_and_stdlib_logs_are_redacted() -> None:
     out = io.StringIO()
-    configure_logging(SecretGate([CANARY]), stream=out)
+    configure_logging(make_gate(CANARY), stream=out)
     structlog.get_logger("agentify").info("event", detail=f"token={CANARY}")
     logging.getLogger("some.library").warning("library says %s", CANARY)
     try:
@@ -34,7 +34,7 @@ def test_uvicorn_records_reach_the_scrubbing_root_handler() -> None:
     from agentify.api.server import uvicorn_config
 
     out = io.StringIO()
-    configure_logging(SecretGate([CANARY]), stream=out)
+    configure_logging(make_gate(CANARY), stream=out)
     uvicorn_config(FastAPI(), host="127.0.0.1", port=0).load()
     logging.getLogger("uvicorn.error").error("Exception in ASGI application: %s", CANARY)
     assert (CANARY in out.getvalue(), "[REDACTED:known-value]" in out.getvalue()) == (False, True)

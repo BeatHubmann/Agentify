@@ -11,11 +11,11 @@ from testcontainers.community.minio import MinioContainer
 from testcontainers.community.postgres import PostgresContainer
 
 from agentify.registry import Registry, load_registry
-from agentify.secretgate import SecretGate
 from agentify.store.blobs import BlobStore
 from agentify.store.db import Database
 from agentify.store.migrate import create_application_role, upgrade
 from agentify.store.workspace import Workspace
+from tests.support.gates import make_gate
 
 APP_ROLE = "agentify_app"  # the worker role: bypasses row-level security by design
 API_ROLE = "agentify_api"  # the API role: row-level security applies
@@ -96,7 +96,7 @@ async def workspace(infra: Infra) -> AsyncIterator[Workspace]:
     db = Database(infra.app_conninfo)
     await db.open()
     try:
-        yield Workspace(db, BlobStore(s3_client(infra), BUCKET), SecretGate([KNOWN_SECRET]))
+        yield Workspace(db, BlobStore(s3_client(infra), BUCKET), make_gate(KNOWN_SECRET))
     finally:
         await db.close()
 

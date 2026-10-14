@@ -9,7 +9,6 @@ import pytest
 
 from agentify import inbox
 from agentify.observability import configure_logging
-from agentify.secretgate import SecretGate
 from agentify.store.db import engagement_scope
 from tests.api.conftest import (
     ADMIN_SUBJECT,
@@ -21,6 +20,7 @@ from tests.api.conftest import (
 )
 from tests.conftest import KNOWN_SECRET, Infra
 from tests.support.agents import INPUT_TEXT
+from tests.support.gates import make_gate
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
@@ -247,7 +247,7 @@ async def test_error_bodies_and_logs_never_carry_a_credential(
     api: httpx.AsyncClient, token: TokenFactory
 ) -> None:
     captured = io.StringIO()
-    configure_logging(SecretGate([KNOWN_SECRET]), stream=captured)
+    configure_logging(make_gate(KNOWN_SECRET), stream=captured)
     setup = await process_for(api, token)
     pid, headers = setup["process_id"], setup["headers"]
     bad_name = await api.post(
@@ -310,7 +310,7 @@ async def test_an_unhandled_error_never_echoes_its_message_in_the_body_or_the_lo
     api: httpx.AsyncClient, token: TokenFactory
 ) -> None:
     captured = io.StringIO()
-    configure_logging(SecretGate([KNOWN_SECRET]), stream=captured)
+    configure_logging(make_gate(KNOWN_SECRET), stream=captured)
     app = api._transport.app  # type: ignore[attr-defined]
 
     @app.get("/test-only/boom")
