@@ -48,6 +48,9 @@ class Outcome:
 class HarnessConfig:
     lease_seconds: float = 15.0
     renew_every: float = 5.0
+    storage_timeout: float = 30.0
+    """If the database or blob store does not answer within this time while a run is finishing,
+    the executor stops trying; the lease runs out and the sweeper finishes the run (A§8.5)."""
 
 
 class _Staging:
@@ -194,42 +197,65 @@ async def _loop(
     return Outcome("gate_passed")
 
 
-async def finish(ws: Workspace, claimed: runs.ClaimedRun, kind: AgentKind, outcome: Outcome) -> str:
-    """The single place a run ends. Returns the final run state."""
-    fence = claimed.fence
-    if outcome.kind == "lease_lost":
-        return "abandoned"  # another process owns the run now; it will finish it
-    if outcome.kind == "unchanged" and await runs.mark_unchanged(ws, fence):
+async def finish(
+    ws: Workspace,
+    claimed: runs.ClaimedRun,
+    kind: AgentKind,
+    outcome: Outcome,
+    config: HarnessConfig | None = None,
+) -> str:
+    """The single place a run ends. Returns the final run state, or `left_for_sweeper` when
+    storage did not answer in time (the run then ends when its lease expires)."""
+    final = "left_for_sweeper"
+    with anyio.move_on_after((config or HarnessConfig()).storage_timeout):
+        final = await _finish(ws, claimed, kind, outcome)
+    return final
+
+
+async def _commit(ws: Workspace, claimed: runs.ClaimedRun, kind: AgentKind) -> Outcome:
+    """Commit a gated run. Returns `committed`, `lease_lost`, or the failure to roll back with."""
+    base_flow = await gate.base_flow_of(ws, claimed.process_id, claimed.base_revision_id, kind)
+    try:
+        await ws.commit(
+            process_id=claimed.process_id,
+            writer=AgentRunWriter(claimed.run_id, claimed.initiated_by, kind.id),
+            base_revision_id=claimed.base_revision_id,
+            staged=await ws.staged(claimed.run_id),
+            semantic_inputs=frozenset(),
+            validate=gate.commit_validator(
+                kind, incremental=claimed.mode == "incremental", base_flow=base_flow
+            ),
+            fence=claimed.fence,
+            message=f"run {kind.id} {claimed.run_id}: {kind.output_path}",
+        )
+    except LeaseLost:
+        return Outcome("lease_lost")
+    except CancelRequested:
+        return Outcome("cancelled", "cancel arrived before commit")
+    except (BaseMovedConflict, CommitValidationFailed, MissingBlob) as exc:
+        return Outcome("commit_failed", f"{type(exc).__name__}: {exc}")
+    except Exception as exc:  # noqa: BLE001 - storage failure during commit (A§8.5)
+        return Outcome("commit_failed", type(exc).__name__)
+    return Outcome("committed")
+
+
+async def _finish(
+    ws: Workspace, claimed: runs.ClaimedRun, kind: AgentKind, outcome: Outcome
+) -> str:
+    if outcome.kind == "unchanged" and await runs.mark_unchanged(ws, claimed.fence):
         return "unchanged"
     if outcome.kind == "gate_passed":
-        base_flow = await gate.base_flow_of(ws, claimed.process_id, claimed.base_revision_id, kind)
-        try:
-            await ws.commit(
-                process_id=claimed.process_id,
-                writer=AgentRunWriter(claimed.run_id, claimed.initiated_by, kind.id),
-                base_revision_id=claimed.base_revision_id,
-                staged=await ws.staged(claimed.run_id),
-                semantic_inputs=frozenset(),
-                validate=gate.commit_validator(
-                    kind, incremental=claimed.mode == "incremental", base_flow=base_flow
-                ),
-                fence=fence,
-                message=f"run {kind.id} {claimed.run_id}: {kind.output_path}",
-            )
-        except LeaseLost:
-            return "abandoned"
-        except CancelRequested:
-            outcome = Outcome("cancelled", "cancel arrived before commit")
-        except (BaseMovedConflict, CommitValidationFailed, MissingBlob) as exc:
-            outcome = Outcome("commit_failed", f"{type(exc).__name__}: {exc}")
-        except Exception as exc:  # noqa: BLE001 - storage failure during commit (A§8.5)
-            outcome = Outcome("commit_failed", type(exc).__name__)
-        else:
-            return "committed"
+        outcome = await _commit(ws, claimed, kind)
+    if outcome.kind in {"committed", "lease_lost"}:
+        return "committed" if outcome.kind == "committed" else "abandoned"
     try:
-        verified = await ws.rollback(fence, outcome=outcome.kind, detail=outcome.detail or None)
+        verified = await ws.rollback(
+            claimed.fence, outcome=outcome.kind, detail=outcome.detail or None
+        )
     except LeaseLost:
-        return "abandoned"
+        return "abandoned"  # another process owns the run now; it will finish it
+    except Exception:  # noqa: BLE001 - storage unreachable: the lease expires and the sweeper finishes
+        return "left_for_sweeper"
     return "rolled_back" if verified else "rollback_failed"
 
 
@@ -261,7 +287,7 @@ async def execute(
             )
     except asyncio.CancelledError:
         with anyio.CancelScope(shield=True):
-            await finish(ws, claimed, kind, Outcome("cancelled", "runtime cancellation"))
+            await finish(ws, claimed, kind, Outcome("cancelled", "runtime cancellation"), config)
         raise
     except RunAbort as exc:
         outcome = Outcome("aborted", f"{exc.reason}: {exc.detail}")
@@ -274,5 +300,5 @@ async def execute(
     except Exception as exc:  # noqa: BLE001 - any failure, including provider errors, ends in rollback
         outcome = Outcome("aborted", type(exc).__name__)
     with anyio.CancelScope(shield=True):
-        final = await finish(ws, claimed, kind, outcome)
+        final = await finish(ws, claimed, kind, outcome, config)
     return final
