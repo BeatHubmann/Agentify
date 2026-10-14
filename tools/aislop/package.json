@@ -1,0 +1,8 @@
+{
+  "name": "agentify-tools-aislop",
+  "private": true,
+  "description": "Pinned aislop CLI for CI; installed with npm ci --ignore-scripts",
+  "devDependencies": {
+    "aislop": "0.16.1"
+  }
+}

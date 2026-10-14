@@ -2,6 +2,8 @@
 
 Like the flow gate it re-reads stored bytes and never depends on anything the model called."""
 
+from typing import TYPE_CHECKING
+
 from agentify.agents.artifact_tools import decode_envelope
 from agentify.artifacts import CheckContext, parse_body, run_checks
 from agentify.domain.envelope import Corrupt
@@ -9,6 +11,9 @@ from agentify.domain.validate import Violation
 from agentify.harness.gate import TRUNCATED_FINISH_REASONS, GateResult
 from agentify.registry import ArtifactAgentKind, Registry
 from agentify.store.workspace import PathReader, Validator, Workspace
+
+if TYPE_CHECKING:
+    from agentify.harness.runs import ClaimedRun
 
 
 async def validate_outputs(
@@ -41,14 +46,16 @@ async def validate_outputs(
 
 async def check(
     ws: Workspace,
-    *,
-    run_id: str,
-    process_id: str,
+    claimed: "ClaimedRun",
     kind: ArtifactAgentKind,
     registry: Registry,
-    incremental: bool,
     finish_reason: str | None,
 ) -> GateResult:
+    run_id, process_id, incremental = (
+        claimed.run_id,
+        claimed.process_id,
+        claimed.mode == "incremental",
+    )
     if finish_reason in TRUNCATED_FINISH_REASONS:
         return GateResult(
             False,

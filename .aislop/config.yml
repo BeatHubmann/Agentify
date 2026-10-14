@@ -1,0 +1,8 @@
+# aislop (https://github.com/scanaislop/aislop), run in CI at a pinned version (tools/aislop).
+telemetry:
+  enabled: false
+exclude:
+  - tools/aislop/node_modules
+  - spikes
+ci:
+  failBelow: 95  # ratchet: two points under the score when aislop was adopted (97, 2026-10-14)

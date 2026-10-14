@@ -7,9 +7,8 @@ and verifies. A lost lease means another process owns the run: this executor sto
 
 import asyncio
 import contextlib
-import json
 from collections.abc import AsyncIterator
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 import anyio
@@ -19,7 +18,6 @@ from pydantic_ai.messages import ModelRequest
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 
-from agentify import inbox
 from agentify.agents.artifact_tools import ArtifactToolDeps
 from agentify.agents.flow_tools import FlowToolDeps, lock_view
 from agentify.agents.router_tools import RouterDeps
@@ -27,7 +25,7 @@ from agentify.domain.edits import EditLayer
 from agentify.domain.envelope import Corrupt, decode_edit_layer
 from agentify.harness import artifact_gate, gate, runs
 from agentify.harness.budget import ErrorBudget, RunAbort
-from agentify.harness.ports import DispatchResult
+from agentify.harness.run_ports import HeadReader, RouterDispatcher, RunInbox, RunStaging
 from agentify.registry import AgentKind, ArtifactAgentKind, FlowAgentKind, Registry, RouterKind
 from agentify.secretgate import SecretFound
 from agentify.store.workspace import (
@@ -60,121 +58,6 @@ class HarnessConfig:
     the executor stops trying; the lease runs out and the sweeper finishes the run (A§8.5)."""
     prompt_version: str | None = None
     """Recorded on every revision the run commits (A§9.5)."""
-
-
-class _Staging:
-    """The `StagingPort` for one run: reads its staging over its base, writes fenced."""
-
-    def __init__(self, ws: Workspace, claimed: runs.ClaimedRun, allowed: frozenset[str]) -> None:
-        self._ws = ws
-        self._claimed = claimed
-        self._allowed = allowed
-
-    async def read(self, path: str) -> bytes | None:
-        # A from-scratch run starts from an empty output, never from the previous one (§6.3 item 5).
-        from_scratch_output = self._claimed.mode == "from_scratch" and path in self._allowed
-        base = None if from_scratch_output else self._claimed.base_revision_id
-        return await self._ws.read_staged_or_base(
-            self._claimed.run_id, self._claimed.process_id, base, path
-        )
-
-    async def write(self, path: str, data: bytes) -> None:
-        if path not in self._allowed:
-            raise PermissionError(f"{path} is not a declared output of this run")
-        await self._ws.stage(self._claimed.fence, self._claimed.process_id, path, data)
-
-    async def list_paths(self, prefix: str) -> list[str]:
-        return await self._ws.list_paths(
-            self._claimed.process_id, prefix, self._claimed.base_revision_id
-        )
-
-
-class _HeadReader:
-    """The router's view: the live workspace head (it writes nothing)."""
-
-    def __init__(self, ws: Workspace, process_id: str) -> None:
-        self._ws = ws
-        self._process_id = process_id
-
-    async def read(self, path: str) -> bytes | None:
-        return await self._ws.read(self._process_id, path)
-
-    async def write(self, path: str, data: bytes) -> None:
-        raise PermissionError("the router has no write path")
-
-    async def list_paths(self, prefix: str) -> list[str]:
-        return await self._ws.list_paths(self._process_id, prefix)
-
-
-class _Inbox:
-    def __init__(self, ws: Workspace, registry: Registry, claimed: runs.ClaimedRun) -> None:
-        self._ws, self._registry, self._claimed = ws, registry, claimed
-
-    async def ask(self, category: str, question: str, options: list[str]) -> str:
-        return await inbox.ask(
-            self._ws,
-            self._registry,
-            process_id=self._claimed.process_id,
-            category=category,
-            question=question,
-            options=options,
-            run_id=self._claimed.run_id,
-        )
-
-    async def read(self, status: str | None) -> str:
-        found = await inbox.items(self._ws, self._claimed.process_id, status=status)
-        return json.dumps([asdict(item) for item in found], sort_keys=True, ensure_ascii=False)
-
-
-class _Dispatcher:
-    """Child runs go through admission like every other entry point (A§8.2, A§9.1)."""
-
-    def __init__(self, ws: Workspace, registry: Registry, claimed: runs.ClaimedRun) -> None:
-        self._ws, self._registry, self._claimed = ws, registry, claimed
-
-    async def dispatch(self, kind: str, mode: str, instructions: str) -> DispatchResult:
-        child = self._registry.agents.get(kind)
-        if child is None or mode not in ("from_scratch", "incremental"):
-            return DispatchResult("refused", detail=f"unknown kind or mode: {kind} {mode}")
-        process_id = self._claimed.process_id
-        confirmation = (
-            await runs.latest_confirmation(self._ws, process_id=process_id, run_kind=kind)
-            if mode == "from_scratch"
-            else None
-        )
-        try:
-            run_id = await runs.admit(
-                self._ws,
-                process_id=process_id,
-                kind=child,
-                mode=mode,  # type: ignore[arg-type]
-                initiated_by=self._claimed.initiated_by,
-                entry_point="router",
-                instructions=instructions,
-                parent_run_id=self._claimed.run_id,
-                intent_confirmation_id=confirmation,
-            )
-        except runs.AdmissionRefused as refused:
-            if refused.code in {"needs_confirmation", "confirmation_invalid"}:
-                item = await inbox.ask(
-                    self._ws,
-                    self._registry,
-                    process_id=process_id,
-                    category="confirmation",
-                    question=f"Regenerating {kind} from scratch would discard the current result. Confirm?",
-                    options=["confirm", "cancel"],
-                    run_id=self._claimed.run_id,
-                    kind="confirmation",
-                    metadata={"run_kind": kind},
-                )
-                return DispatchResult(
-                    "needs_confirmation", detail=f"asked the user (inbox item {item})"
-                )
-            return DispatchResult(
-                "already_running" if refused.code == "already_running" else "refused",
-                detail=str(refused),
-            )
-        return DispatchResult("admitted", run_id=run_id)
 
 
 @contextlib.asynccontextmanager
@@ -216,8 +99,8 @@ async def _deps(
     registry: Registry | None,
     output_language: str,
 ) -> Any:
-    staging = _Staging(ws, claimed, frozenset(kind.output_paths))
-    port = _Inbox(ws, registry, claimed) if registry is not None else None
+    staging = RunStaging(ws, claimed, frozenset(kind.output_paths))
+    port = RunInbox(ws, registry, claimed) if registry is not None else None
     if isinstance(kind, FlowAgentKind):
         layer = (
             await _edit_layer_at_base(ws, claimed, kind)
@@ -249,8 +132,8 @@ async def _deps(
             inbox_categories=kind.inbox_categories,
         )
     return RouterDeps(
-        workspace=_HeadReader(ws, claimed.process_id),
-        dispatcher=_Dispatcher(ws, registry, claimed),
+        workspace=HeadReader(ws, claimed.process_id),
+        dispatcher=RouterDispatcher(ws, registry, claimed),
         registry=registry,
         inbox=port,
         inbox_categories=kind.inbox_categories,
@@ -303,27 +186,10 @@ async def _gate(
     registry: Registry | None,
     finish_reason: str | None,
 ) -> gate.GateResult:
-    incremental = claimed.mode == "incremental"
     if isinstance(kind, FlowAgentKind):
-        return await gate.check(
-            ws,
-            run_id=claimed.run_id,
-            process_id=claimed.process_id,
-            kind=kind,
-            incremental=incremental,
-            base_revision_id=claimed.base_revision_id,
-            finish_reason=finish_reason,
-        )
+        return await gate.check(ws, claimed, kind, finish_reason)
     if isinstance(kind, ArtifactAgentKind) and registry is not None:
-        return await artifact_gate.check(
-            ws,
-            run_id=claimed.run_id,
-            process_id=claimed.process_id,
-            kind=kind,
-            registry=registry,
-            incremental=incremental,
-            finish_reason=finish_reason,
-        )
+        return await artifact_gate.check(ws, claimed, kind, registry, finish_reason)
     return gate.GateResult(True, unchanged=True)  # the router writes nothing
 
 
