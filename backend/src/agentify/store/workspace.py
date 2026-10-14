@@ -14,6 +14,7 @@ from psycopg import AsyncConnection
 from agentify.domain.canonical import sha256_hex
 from agentify.domain.validate import Violation
 from agentify.secretgate import SecretGate
+from agentify.store import security_events
 from agentify.store.blobs import BlobStore
 from agentify.store.db import Database
 
@@ -175,11 +176,14 @@ class Workspace:
     # -- run staging -------------------------------------------------------------------------
 
     async def stage(self, fence: Fence, process_id: str, path: str, data: bytes) -> str:
-        """Write into the run's private staging, fenced by its lease. Returns the blob hash."""
-        scrubbed = self.gate.check_bytes(data, where=f"staged {path}")
-        sha = sha256_hex(scrubbed.value)
+        """Write into the run's private staging, fenced by its lease. Returns the blob hash. A gate
+        hit raises `SecretFound`, unless the engagement allow-lists that fingerprint (A§18.3)."""
         async with self.db.tx() as conn:
             engagement_id = await self.engagement_of(conn, process_id)
+        allowed = await security_events.allowed(self.db, engagement_id)
+        scrubbed = self.gate.check_bytes(data, where=path, allowed=allowed)
+        sha = sha256_hex(scrubbed.value)
+        async with self.db.tx() as conn:
             pinned = await conn.execute(
                 """INSERT INTO blob_pin (engagement_id, blob_sha256, pinned_by_run)
                    SELECT %s, %s, %s WHERE EXISTS (
