@@ -176,6 +176,15 @@ These are the suites of A§26.2: `unit`, `property`, `analytic`, `orchestration`
 | Defects found during the slice | A staged write or an inbox question carrying a credential aborted the run on its first hit (A§10.2 makes it correctable). Run-record details, including gate reports quoting an allow-listed value, were stored without the gate. Nested log values and objects rendered by the JSON renderer were not scrubbed. A unique violation's `DETAIL` line wrote the key value into the Postgres log under default settings. Redaction raised on lone surrogates, which model output decoded from JSON can contain. Once run events recorded their own hits, the repeat counter also counted the redacted run event of the very tool call it was refusing, and aborted on the first hit; it now counts refused agent writes only |
 | Log location | Local run; CI evidence follows on the pull request |
 
+### E-12: slice 2d in CI, 2026-10-15 01:04 CEST (23:04 UTC, 2026-10-14)
+
+| Field | Value |
+|---|---|
+| Revision | `d1f4af2` (PR #11 head; code identical to E-11's `2e99962`, plus documentation) |
+| Command | GitHub Actions workflow `ci`, run 38651562294 |
+| Results | backend checks pass (**223 passed** in 79.0 s); aislop pass; secret scan pass; spell check pass. GitHub CodeQL analysis (actions, python) also passed |
+| Log location | https://github.com/BeatHubmann/Agentify/actions/runs/38651562294 |
+
 ## 1. Invariants (§10, A§22)
 
 | ID | Requirement (short) | Source | Proof obligation (scenario) | Layer | Independent oracle | Negative control | Status |
