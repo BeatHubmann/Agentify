@@ -155,6 +155,15 @@ These are the suites of A§26.2: `unit`, `property`, `analytic`, `orchestration`
 | Defects found during the slice | The stream gave the client no way to tell which event it had last received, so a reconnect could not resume correctly; each event's last SSE message now carries its sequence number as its `id`. A first `gitleaks dir .` reported pytest's ignored bytecode for the secret-gate tests, because CPython folds the test's split fake key back into one constant; no `.pyc` is tracked, and the CI scan reads git history |
 | Log location | Local run; CI evidence follows on the pull request |
 
+### E-10: slice 2c-2 in CI, 2026-10-14 23:35 CEST (21:35 UTC)
+
+| Field | Value |
+|---|---|
+| Revision | `3eb1751` (PR #9 head; code identical to E-9's `4756b93`, plus documentation) |
+| Command | GitHub Actions workflow `ci`, run 38641205559 |
+| Results | backend checks pass (**190 passed** in 82.0 s); aislop pass; secret scan pass; spell check pass. GitHub CodeQL analysis (actions, python) also passed |
+| Log location | https://github.com/BeatHubmann/Agentify/actions/runs/38641205559 |
+
 ## 1. Invariants (§10, A§22)
 
 | ID | Requirement (short) | Source | Proof obligation (scenario) | Layer | Independent oracle | Negative control | Status |
