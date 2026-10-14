@@ -1,0 +1,96 @@
+[project]
+name = "agentify"
+version = "0.1.0"
+description = "Agentify backend: governed, quantified, testable agentic process redesign"
+readme = "README.md"
+authors = [
+    { name = "anonymous", email = "anonymous@anonymous.invalid" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.14,<2",
+    "anyio>=4,<5",
+    "boto3>=1.40,<2",
+    "networkx>=3.4,<4",
+    "psycopg[binary,pool]>=3.2,<4",
+    "pydantic>=2.14,<3",
+    "pydantic-ai-slim==2.56.0",
+    "pyyaml>=6,<7",
+    "sqlalchemy>=2,<3",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "boto3-stubs[s3]>=1.43.113",
+    "hypothesis>=6,<7",
+    "import-linter>=2,<3",
+    "mypy>=1.13",
+    "pytest>=8,<9",
+    "ruff>=0.8",
+    "testcontainers[minio,postgres]>=4,<5",
+    "types-pyyaml>=6.0.12.20260906",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC", "PT", "N", "S", "BLE", "TRY", "PL"]
+ignore = [
+  "TRY003",   # long messages in exceptions are the structured-error payload
+  "PLR0913",  # explicit keyword arguments are preferred over hidden state
+  "PLR2004",  # thresholds are named in the registry; tests use literal oracles
+  "E501",     # the formatter owns line length; SQL statements and messages are not wrapped
+  "N818",     # exception names state the condition in domain terms (LeaseLost, BaseMovedConflict)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "PLR0915", "PLC0415"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+mypy_path = "src"
+packages = ["agentify"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["networkx.*", "testcontainers.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+xfail_strict = true
+filterwarnings = ["error"]
+markers = [
+  "integration: needs Docker (Postgres and MinIO containers)",
+]
+
+[tool.importlinter]
+root_package = "agentify"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Pure core performs no I/O and imports no infrastructure"
+type = "forbidden"
+source_modules = ["agentify.domain"]
+forbidden_modules = ["agentify.store", "agentify.harness", "agentify.agents", "agentify.llm", "psycopg", "boto3", "pydantic_ai"]
+
+[[tool.importlinter.contracts]]
+name = "Agents depend on the harness only through its ports"
+type = "forbidden"
+source_modules = ["agentify.agents"]
+forbidden_modules = ["agentify.store", "agentify.harness.admission", "agentify.harness.execute", "agentify.harness.gate", "agentify.harness.sweeper", "agentify.harness.runs"]
+
+[[tool.importlinter.contracts]]
+name = "Layers"
+type = "layers"
+layers = ["agentify.harness", "agentify.agents", "agentify.domain"]
+# Agents may use the protocols the harness injects into each run, and nothing else from it (A§4).
+ignore_imports = ["agentify.agents.** -> agentify.harness.ports"]
