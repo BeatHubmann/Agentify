@@ -1,0 +1,8 @@
+1 ModelRetry budget (retries=2): UnexpectedModelBehavior: Tool 'mutate' exceeded max retries count of 2. Consider raising the retry limit, or see the docs on tool retries: https://pydantic.dev/docs/ai/tools-toolsets/tools-advanced/#tool-retries | model calls=3
+2 retry counter resets after success? run ok, output='done', model calls=7
+3 ToolFailed x6 with retries=1: run ok='done'; parts=['ToolReturnPart', 'ToolReturnPart', 'ToolReturnPart']...
+4 plain exception in tool propagates as: KeyError: 'boom'
+5 request_limit=3: UsageLimitExceeded: The next request would exceed the request_limit of 3. Consider raising the limit, or see the docs on usage limits for budget-aware patterns: https://pydantic.dev/docs/ai/core-concepts/agent/#usage-limits | model calls=3
+6 external task.cancel(): CancelledError propagated after 9 nodes; kinds=['CallToolsNode', 'ModelRequestNode', 'UserPromptNode']
+7 four tool calls in one response: max concurrent executions=4
+8 scripted model sees tool schema: [('add_node', '{"additionalProperties": false, "properties": {"node_id": {"type": "string"}, "label": {"type": "string"}}, "required": ')]
