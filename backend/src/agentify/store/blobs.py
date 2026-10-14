@@ -15,6 +15,14 @@ _ALREADY_EXISTS = {"PreconditionFailed", "412"}
 _MISSING = {"404", "NoSuchKey", "NotFound"}
 
 
+def _error_code(exc: ClientError) -> str | None:
+    """The S3 error code of a client error, or None when the response carries none."""
+    error = exc.response.get("Error")
+    if error is None:
+        return None
+    return error.get("Code")
+
+
 class BlobStore:
     def __init__(self, client: "S3Client", bucket: str) -> None:
         self._client = client
@@ -37,7 +45,7 @@ class BlobStore:
                     IfNoneMatch="*",
                 )
             except ClientError as exc:
-                if exc.response.get("Error", {}).get("Code") not in _ALREADY_EXISTS:
+                if _error_code(exc) not in _ALREADY_EXISTS:
                     raise
 
         await anyio.to_thread.run_sync(_put)
@@ -60,7 +68,7 @@ class BlobStore:
             try:
                 self._client.head_object(Bucket=self._bucket, Key=self.key(engagement_id, sha))
             except ClientError as exc:
-                if exc.response.get("Error", {}).get("Code") in _MISSING:
+                if _error_code(exc) in _MISSING:
                     return False
                 raise
             return True

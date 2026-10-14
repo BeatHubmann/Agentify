@@ -40,10 +40,6 @@ AGENT_ARCHETYPES = frozenset({NodeKind.TASK, NodeKind.ORCHESTRATOR, NodeKind.ACT
 CONTAINER_KINDS = frozenset({NodeKind.ORCHESTRATOR, NodeKind.ACTOR})
 
 
-def _normalized(value: str) -> str:
-    return normalize_text(value)
-
-
 NormalizedText = Annotated[str, Field(max_length=20_000)]
 
 
@@ -57,7 +53,7 @@ class Output(_Model):
     name: str
     schema_ref: str | None = None
 
-    _norm = field_validator("name")(_normalized)
+    _norm = field_validator("name")(normalize_text)
 
 
 class InputBinding(_Model):
@@ -88,7 +84,7 @@ class Node(_Model):
     inputs: tuple[InputBinding, ...] = ()
     preconditions: Precondition | None = None
 
-    _norm = field_validator("label", "description")(_normalized)
+    _norm = field_validator("label", "description")(normalize_text)
 
 
 class Edge(_Model):

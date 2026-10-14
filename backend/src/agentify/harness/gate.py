@@ -4,12 +4,16 @@ Neither depends on anything the model did or did not call: they re-read stored b
 """
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from agentify.domain.edits import EditLayer, item_hash, merge
 from agentify.domain.envelope import Corrupt, decode_edit_layer, decode_flow
 from agentify.domain.flow import Edge, Flow, Node
 from agentify.domain.validate import Violation, flow_invariants
 from agentify.registry import FlowAgentKind
+
+if TYPE_CHECKING:
+    from agentify.harness.runs import ClaimedRun
 from agentify.store.workspace import PathReader, Validator, Workspace
 
 TRUNCATED_FINISH_REASONS = frozenset({"length"})
@@ -67,20 +71,15 @@ async def validate_flow_state(
 
 
 async def check(
-    ws: Workspace,
-    *,
-    run_id: str,
-    process_id: str,
-    kind: FlowAgentKind,
-    incremental: bool,
-    base_revision_id: str | None,
-    finish_reason: str | None,
+    ws: Workspace, claimed: "ClaimedRun", kind: FlowAgentKind, finish_reason: str | None
 ) -> GateResult:
     if finish_reason in TRUNCATED_FINISH_REASONS:
         return GateResult(
             False,
             violations=(Violation("truncated_finish", "The model's last answer was cut off."),),
         )
+    run_id, process_id = claimed.run_id, claimed.process_id
+    base_revision_id, incremental = claimed.base_revision_id, claimed.mode == "incremental"
     staged = await ws.staged(run_id)
     if not staged:
         if incremental:
