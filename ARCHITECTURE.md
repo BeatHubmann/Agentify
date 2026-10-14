@@ -237,7 +237,8 @@ Two buckets with separate IAM roles. The `agent` role can write only `artifacts`
 
 ```
 engagement(id, name, currency CHAR(3), period, default_output_language, created_by, …)
-membership(engagement_id, user_id, role)                  -- consultant | waiver_approver | reviewer
+app_user(id, issuer, subject UNIQUE per issuer, display_name, is_admin)   -- created on first sign-in
+membership(engagement_id, user_id, role, granted_by)      -- consultant | waiver_approver | reviewer
 process(id, engagement_id, name, output_language, …)
 workspace_head(process_id PK, revision_id, updated_at)    -- the single moving pointer per process
 revision(id, process_id, parent_id, run_id NULL, author_kind, author_id, message,
@@ -1241,7 +1242,7 @@ Every exit API accepts only `Scrubbed[...]` values, which only the gate construc
 | Run records | `outcome_detail`, gate reports and error-budget details are `Scrubbed` fields |
 | Chat history | `chat.append` takes `Scrubbed[ChatContent]` |
 | Inbox, waivers, sign-offs | `inbox.create`, waiver justification and sign-off statement take `Scrubbed[...]` |
-| HTTP responses | The exception handler and the problem-details serializer pass every error body through the gate, so an echoed input cannot carry a credential out |
+| HTTP responses | The exception handler and the problem-details serializer pass every error body through the gate, so an echoed input cannot carry a credential out. uvicorn runs with its own log configuration disabled (`api.server`), so the tracebacks it logs after an unhandled error reach the scrubbing root handler |
 | Version history | `store.blobs.put` takes `Scrubbed[bytes]`; every revision blob passes the gate |
 | Generated code | `check_tree` on the normalized tree before commit (A§14.4) |
 | Reports and derived artifacts | They are blobs, so they pass the blob gate |
@@ -1260,7 +1261,8 @@ A hit in content destined for storage is **redacted with a marker** for logs, pr
 
 - **Authentication:** the gateway verifies OIDC ID or access tokens from the configured issuer (signature against cached JWKS, issuer, audience, expiry). Users are created on first sign-in. The API never trusts a client-supplied user id.
 - **Authorization:** every engagement-scoped request checks membership and role in the service layer. Postgres row-level security keyed on the transaction's engagement set is the second wall. Object-storage keys are prefixed by engagement (`<engagement_id>/sha256/…`), and the blob store API requires the engagement context and refuses keys outside it, so content is never deduplicated or addressable across engagements, and an engagement's data can be exported or purged as a unit. Storage credentials are held only by `agent`, `worker` and, for its prefix, `sandbox-exchange`; never by the client, the gateway or a sandbox.
-- **Background work and sandboxes** carry the engagement id in the job record; the worker sets the RLS context from it; a sandbox receives only its own job's bundle, through a token bound to that job.
+- **Database roles.** The API connects as a role without `BYPASSRLS` and sets `agentify.engagement_ids` per transaction from the caller's memberships (`store.db.engagement_scope`); without a scope it sees nothing. The worker connects as a role with `BYPASSRLS`, because the sweeper and router follow-ups scan runs across engagements by design (change C-4). Untrusted code never runs in the worker: it runs in sandboxes, which receive only their own job's bundle through a token bound to that job.
+- **The service wall is independent of RLS.** Every process-scoped handler checks the caller's membership itself before answering; unknown and not-visible resources both answer 404. Tests show each wall alone keeps engagements apart (VERIFICATION SEG-1).
 - **Roles** (OD-9): `consultant`, `waiver_approver`, `reviewer` per engagement; `admin` per deployment. Admin manages users and assignments and **activates** approved rule-pack and catalog versions; admin has no engagement content access unless also a member.
 - **Rule-pack and catalog management** (§11.13): packs and catalogs are registry files, so adding, versioning, reviewing and retiring them is a pull request with required review; a pack version records `approved_by` and `approved_at` (the operator approval of its blocking rules, §6.9) and an `effective_to` date when retired. At runtime an admin activates an approved version for the deployment (`rule_pack_activation`), which triggers re-assessment notices (A§11.5). Catalog entries are edited only by their named human maintainers through the same review; agents have no write path to the registry.
 - **Four-eyes:** waivers and sign-offs check `approver ∉ authors(key)` (A§11.2). The check is server-side; the stored decision records the author set it was checked against (`checked_authors`).
@@ -1467,6 +1469,7 @@ Changes made during governed development, each in the PR that implements it.
 | C-1 | 2b | Specification citations are `(input, verbatim quote)`, checked by containment, instead of an offset span with a quote hash (A§6.11) | Models copy text reliably but count characters unreliably; containment is just as deterministic and checkable |
 | C-2 | 2b | From-scratch runs of artifact-authoring kinds over existing output need the same attributed human intent as flow kinds (A§8.2) | Regenerating any agent artifact discards work; the same fail-closed rule applies, and corrupt artifacts are never silently regenerated |
 | C-3 | 2b | Router follow-up turns are triggered by durable `router_continuation` notices consumed in the admission transaction (A§9.1) | A follow-up admitted directly by a finishing child would be refused while another router turn is active, losing the notice |
+| C-4 | 2c-1 | The worker's database role bypasses row-level security instead of setting a per-job engagement scope (A§19) | The sweeper and router follow-ups scan runs across engagements by design, and untrusted code runs in sandboxes, not in the worker. RLS stays the second wall for every API request. Scoping the worker per run remains possible later |
 
 ---
 
