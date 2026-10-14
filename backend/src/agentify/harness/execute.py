@@ -8,7 +8,7 @@ and verifies. A lost lease means another process owns the run: this executor sto
 import asyncio
 import contextlib
 import traceback
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -382,8 +382,36 @@ async def execute(
     output_language: str = "en",
     config: HarnessConfig | None = None,
     registry: Registry | None = None,
+    credentials: Sequence[str] = (),
 ) -> str:
-    config = config or HarnessConfig()
+    """Run one claimed run to a final state. `credentials` are its per-request credentials (A§17.2):
+    known values in every sink, other runs' included, until the run, its `finish` too, is over."""
+    with ws.gate.registered(credentials):
+        return await _execute(
+            ws,
+            claimed,
+            kind,
+            agent=agent,
+            model=model,
+            prompt=prompt,
+            output_language=output_language,
+            config=config or HarnessConfig(),
+            registry=registry,
+        )
+
+
+async def _execute(
+    ws: Workspace,
+    claimed: runs.ClaimedRun,
+    kind: AgentKind,
+    *,
+    agent: Agent[Any, str],
+    model: Model,
+    prompt: str,
+    output_language: str,
+    config: HarnessConfig,
+    registry: Registry | None,
+) -> str:
     lost = asyncio.Event()
     outcome: Outcome
     try:

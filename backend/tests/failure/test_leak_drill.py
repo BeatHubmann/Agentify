@@ -1,6 +1,7 @@
 """Leak drill per exit (INV-8, A§18): plant a credential, then search each sink for it from outside
 the gate. Every hit must also leave a security event that holds no secret (A§18.3)."""
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -298,3 +299,71 @@ async def test_an_allow_list_entry_never_applies_in_another_engagement_past_row_
         frozenset({hit}),
         frozenset(),
     ]
+
+
+async def run_events_text(ws: Workspace, run_id: str) -> str:
+    async with ws.db.tx() as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT payload_scrubbed::text AS p FROM run_event WHERE run_id = %s", (run_id,)
+            )
+        ).fetchall()
+    return " ".join(str(r["p"]) for r in rows)
+
+
+async def test_concurrent_runs_never_leak_each_others_credentials(
+    infra: Infra, workspace: Workspace, registry: Registry
+) -> None:
+    """Each run's per-request credential is a known value in every sink while the run lives (A§17.2)."""
+    credentials = ("per-request-credential-of-run-a", "per-request-credential-of-run-b")
+    processes = [f"proc-{uuid.uuid4().hex[:12]}" for _ in credentials]
+    for process_id in processes:
+        await workspace.create_process(f"eng-{uuid.uuid4().hex[:8]}", process_id)
+    both_live = asyncio.Barrier(2)
+
+    async def meet() -> None:
+        await both_live.wait()
+
+    def echoing(other: str) -> Script:
+        node = {"id": "receive", "label": f"use {other}", "kind": "step", "execution": "external"}
+        return Script([Step(calls=[("add_node", node)], before=meet), *golden_calls()])
+
+    results = await asyncio.gather(
+        *(
+            run_once(workspace, registry, pid, echoing(other), credentials=(own,))
+            for pid, own, other in zip(processes, credentials, reversed(credentials), strict=True)
+        )
+    )
+    leaks = []
+    for (run_id, _), pid in zip(results, processes, strict=True):
+        engagement = await engagement_of(workspace, pid)
+        sinks = await run_events_text(workspace, run_id) + str(
+            await security_events(workspace, run_id)
+        )
+        for credential in credentials:
+            leaks += stored_objects_holding(infra, engagement, credential)
+            leaks += [run_id] if holds(sinks, credential) else []
+    refused = [
+        [(e["exit"], e["fingerprint"]) for e in await security_events(workspace, run_id)]
+        for run_id, _ in results
+    ]
+    assert (
+        [final for _, final in results],
+        leaks,
+        refused,
+        [workspace.gate.redact_text(c).value for c in credentials],
+    ) == (
+        ["committed", "committed"],
+        [],
+        [
+            [
+                ("run_event", fingerprint(credentials[1])),
+                ("staged_write", fingerprint(credentials[1])),
+            ],
+            [
+                ("run_event", fingerprint(credentials[0])),
+                ("staged_write", fingerprint(credentials[0])),
+            ],
+        ],
+        list(credentials),  # registered only while their runs lived
+    )
