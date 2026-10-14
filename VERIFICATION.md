@@ -69,6 +69,16 @@ These are the suites of A§26.2: `unit`, `property`, `analytic`, `orchestration`
 | Spike S1 | Re-run at the pinned versions with identical results |
 | Log location | Local run; CI evidence follows on the pull request |
 
+### E-2: slice 1 in CI, 2026-10-14 21:21 CEST (19:21 UTC)
+
+| Field | Value |
+|---|---|
+| Revision | `ec697a9` (PR #3 head; code identical to E-1's `98aab89`, plus documentation) |
+| Command | GitHub Actions workflow `ci`, run 38622847596 |
+| Environment | `ubuntu-24.04` runner, same locked dependencies and container images as E-1 |
+| Results | backend checks pass (format, lint, types, import contracts; **96 passed** in 45.8 s, with warnings as errors); secret scan pass (gitleaks, full history, no leaks); spell check pass |
+| Log location | https://github.com/BeatHubmann/Agentify/actions/runs/38622847596 |
+
 ## 1. Invariants (§10, A§22)
 
 | ID | Requirement (short) | Source | Proof obligation (scenario) | Layer | Independent oracle | Negative control | Status |
@@ -238,7 +248,7 @@ These are the suites of A§26.2: `unit`, `property`, `analytic`, `orchestration`
 | HZ-29 | Stale catalogs | §9 #29, §6.13; A§11.3, A§16 | A catalog version change flags affected flows (BC-H.5) | failure | — | — | deferred (OD-12) |
 | HZ-30 | False assurance | §9 #30, §6.13; A§20, A§23 | Release 1: run the verdict-phrase scanner over a fixture set and over every model-written text (chat and router output, governance-report summaries, handover text) in all five output languages; in artifacts a hit is a correctable error to the writing agent; in chat the message is stored with a visible note and the hit is counted per prompt version; the export gate follows with regulatory mapping | unit, failure, orchestration | A fixture set of verdict phrases ("compliant", "safe", "guaranteed", "will save" and translations) and neutral controls; per-prompt-version hit counter | A scanner checking only the source locale, or only reports and not chat | proposed (scanner); export-gate part deferred (OD-12) |
 | HZ-31 | Stale readiness | §9 #31, §4.4; A§11 | See BC-C.11, for each revision-key component, and INV-11.RECHECK for long jobs | failure, property | Revision key recomputed by the test | Readiness cached per flow path | proposed |
-| HZ-32 | Leaked event loops or resources in tests | §9 #32; A§23, A§26.4 | CI runs pytest with warnings as errors and anyio resource checks; every suppression carries a removal date, and expired dates fail | static | A deliberately leaking fixture (unclosed loop or socket) fails CI | A global filter on `ResourceWarning` | implemented (pytest runs with warnings as errors; verified once CI has run on the PR) |
+| HZ-32 | Leaked event loops or resources in tests | §9 #32; A§23, A§26.4 | CI runs pytest with warnings as errors and anyio resource checks; every suppression carries a removal date, and expired dates fail | static | A deliberately leaking fixture (unclosed loop or socket) fails CI | A global filter on `ResourceWarning` | verified (E-2: CI ran the suite with warnings as errors; no suppressions exist) |
 
 ---
 
