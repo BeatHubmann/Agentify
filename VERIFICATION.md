@@ -112,6 +112,15 @@ These are the suites of A§26.2: `unit`, `property`, `analytic`, `orchestration`
 | Defects found during the slice | the worker loop was not passing the registry to `execute`, so a router turn aborted; caught by the end-to-end router test |
 | Log location | Local run; CI evidence follows on the pull request |
 
+### E-6: slice 2b in CI, 2026-10-14 22:23 CEST (20:23 UTC)
+
+| Field | Value |
+|---|---|
+| Revision | `c9ff94f` (PR #5 head; code identical to E-5's `da69234`, plus documentation) |
+| Command | GitHub Actions workflow `ci`, run 38631415849 |
+| Results | backend checks pass (**163 passed** in 64.5 s); secret scan pass; spell check pass |
+| Log location | https://github.com/BeatHubmann/Agentify/actions/runs/38631415849 |
+
 ## 1. Invariants (§10, A§22)
 
 | ID | Requirement (short) | Source | Proof obligation (scenario) | Layer | Independent oracle | Negative control | Status |
