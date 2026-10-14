@@ -563,5 +563,18 @@ async def test_a_refused_session_rereads_and_resubmits(
 
 
 def test_no_agent_kind_can_write_the_user_layer(registry: Registry) -> None:
-    user_paths = {kind.edit_layer_path for kind in registry.agents.values()}
-    assert [kind.id for kind in registry.agents.values() if kind.output_path in user_paths] == []
+    import re
+
+    from agentify.registry import FlowAgentKind
+
+    user_paths = {
+        k.edit_layer_path for k in registry.agents.values() if isinstance(k, FlowAgentKind)
+    }
+    user_layer = re.compile(r"^flows/[^/]+/(edits|layout)\.json$")
+    writers = [
+        (kind.id, path)
+        for kind in registry.agents.values()
+        for path in kind.output_paths
+        if path in user_paths or user_layer.match(path)
+    ]
+    assert (writers, len(registry.agents) > 1) == ([], True)
