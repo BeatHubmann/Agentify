@@ -15,6 +15,7 @@ dependencies = [
     { name = "alembic" },
     { name = "anyio" },
     { name = "boto3" },
+    { name = "jsonpatch" },
     { name = "networkx" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic" },
@@ -40,6 +41,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.14,<2" },
     { name = "anyio", specifier = ">=4,<5" },
     { name = "boto3", specifier = ">=1.40,<2" },
+    { name = "jsonpatch", specifier = ">=1.33,<2" },
     { name = "networkx", specifier = ">=3.4,<4" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2,<4" },
     { name = "pydantic", specifier = ">=2.14,<3" },
@@ -742,6 +744,27 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d3/59/322338183ecda247fb5d1763a6cbe46eff7222eaeebafd9fa65d4bf5cb11/jmespath-1.1.0.tar.gz", hash = "sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d", size = 27377, upload-time = "2026-01-22T16:35:26.279Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/14/2f/967ba146e6d58cf6a652da73885f52fc68001525b4197effc174321d70b4/jmespath-1.1.0-py3-none-any.whl", hash = "sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64", size = 20419, upload-time = "2026-01-22T16:35:24.919Z" },
+]
+
+[[package]]
+name = "jsonpatch"
+version = "1.35"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jsonpointer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/df/f8/48a6033ebdd5013a58b5a79402eacb15ffb6e208f244c1c17f6f1e3b29c2/jsonpatch-1.35.tar.gz", hash = "sha256:679ad08672b4663c7ef1e5f3331d940f5e7786661b9acc1530104be1638e7a4f", size = 39440, upload-time = "2026-10-10T21:34:24.61Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/46/840ee494290e36ffad7c905b1f90a5a074d94de0f752ebe466ebccd6e1e1/jsonpatch-1.35-py3-none-any.whl", hash = "sha256:417e05303ebf7aef98d3ebf1e1ae7e7a4de6ec57bc5d243cd3509eff650e959f", size = 17005, upload-time = "2026-10-10T21:34:23.299Z" },
+]
+
+[[package]]
+name = "jsonpointer"
+version = "3.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/a2/c92f0a7ed439c490d2c8ad712fdb074c311afa4f77870987826a3b1483ba/jsonpointer-3.2.1.tar.gz", hash = "sha256:47c846513b3a4ec46eecef1105207fba075e2a3659048e362bd7daff0fc33342", size = 11309, upload-time = "2026-10-10T21:11:06.988Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/29/accef8eea16670b88f3a23102c35dee62c6f159db30d9628908043b3e21b/jsonpointer-3.2.1-py3-none-any.whl", hash = "sha256:b19ee68644e9ffb51440448d8f7811af2b7406eea1db90603e93f5849323119a", size = 8332, upload-time = "2026-10-10T21:11:05.648Z" },
 ]
 
 [[package]]

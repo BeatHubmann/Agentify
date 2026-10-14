@@ -1,0 +1,5 @@
+id: specification
+path_pattern: "spec/specification.json"
+schema_ref: "builtin:specification"
+write_checks: [spec.paragraph_ids_unique, spec.sources_grounded]
+gate_checks: [spec.paragraph_ids_unique, spec.sources_grounded, specification.complete]

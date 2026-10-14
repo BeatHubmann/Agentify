@@ -22,7 +22,7 @@ from agentify.domain.flow import Edge, Flow, Node
 from agentify.domain.ids import is_agent_id
 from agentify.domain.validate import Violation
 from agentify.harness.gate import validate_flow_state
-from agentify.registry import AgentKind
+from agentify.registry import FlowAgentKind
 from agentify.store.workspace import (
     BaseMovedConflict,
     CommitValidationFailed,
@@ -131,7 +131,7 @@ async def apply_edit_batch(
     ws: Workspace,
     *,
     process_id: str,
-    kind: AgentKind,
+    kind: FlowAgentKind,
     base_revision_id: str | None,
     user_id: str,
     batch: EditBatch,

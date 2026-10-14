@@ -1,0 +1,18 @@
+# One of three parallel specification-section agents (A§9.2). Each writes only its own section.
+id: spec-section-current
+model_role: spec-section
+prompt: spec-section.md
+toolset: artifact_authoring
+phase: specification
+modes: [from_scratch, incremental]
+input_paths: ["inputs/"]
+inbox_categories: [spec-clarification]
+outputs:
+  - path: spec/current.json
+    artifact_type: spec_section
+    initial: {section: current, paragraphs: []}
+budgets:
+  request_limit: 40
+  errors_per_tool: 5
+  errors_per_class: 8
+  errors_per_run: 20

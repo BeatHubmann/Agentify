@@ -19,20 +19,21 @@ def upgrade(admin_url: str) -> None:
 
 
 def create_application_role(admin_url: str, role: str, password: str) -> None:
-    spec = importlib.util.spec_from_file_location(
-        "m0001", MIGRATIONS / "versions" / "0001_foundation.py"
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("migration 0001 not found")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    """Create the least-privileged application role and apply every migration's grants."""
     with psycopg.connect(admin_url.replace("postgresql+psycopg://", "postgresql://")) as connection:
         connection.execute(
             sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
                 sql.Identifier(role), sql.Literal(password)
             )
         )
-        for statement in module.grant_application_role(role):
-            connection.execute(
-                sql.SQL(statement)
-            )  # statements are constants from the migration module
+        for path in sorted((MIGRATIONS / "versions").glob("*.py")):
+            spec = importlib.util.spec_from_file_location(path.stem, path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"cannot load migration {path.name}")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            grants = getattr(module, "grant_application_role", None)
+            for statement in grants(role) if grants else []:
+                connection.execute(
+                    sql.SQL(statement)
+                )  # statements are constants from the migrations

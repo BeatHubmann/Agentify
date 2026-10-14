@@ -7,6 +7,7 @@ otherwise rolled back and verified.
 
 from dataclasses import dataclass
 
+from agentify.harness import runs
 from agentify.store.workspace import Fence, Workspace
 
 ACTIVE = ("running", "gating", "committing", "rolling_back")
@@ -70,6 +71,9 @@ async def _finish_lost_run(ws: Workspace, fence: Fence) -> str:
                    WHERE id = %s AND lease_owner = %s AND lease_epoch = %s""",
                 (fence.run_id, fence.owner, fence.epoch),
             )
-            return "committed"
+    if committed is not None:
+        await runs.record_continuation(ws, fence.run_id)
+        return "committed"
     verified = await ws.rollback(fence, outcome="executor_lost")
+    await runs.record_continuation(ws, fence.run_id)
     return "rolled_back" if verified else "rollback_failed"
