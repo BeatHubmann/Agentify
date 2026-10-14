@@ -1,6 +1,14 @@
-"""A real worker process for the kill test: claims one run and hangs after staging (A§8.5)."""
+"""Real worker processes for the kill, stall and shutdown tests (A§8.5).
+
+Modes:
+- `mid_run`: claim one run, stage some writes, then hang (the parent SIGKILLs it).
+- `in_commit`: run to the commit and block inside the commit transaction (SIGKILL).
+- `stall`: stage, then pause in a model step (the parent SIGSTOPs and SIGCONTs), then try to continue.
+- `worker`: run the real worker loop; SIGTERM requests a graceful stop.
+"""
 
 import asyncio
+import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -9,6 +17,7 @@ import boto3
 
 from agentify.agents.flow_tools import build_modeler
 from agentify.harness import execute, runs
+from agentify.harness.worker import WorkerConfig, run_worker
 from agentify.registry import load_registry
 from agentify.secretgate import SecretGate
 from agentify.store.blobs import BlobStore
@@ -32,6 +41,43 @@ class HangInsideCommit(Workspace):
         return await super().commit(**{**kwargs, "validate": hang_in_transaction})
 
 
+async def _hang() -> None:
+    print("STAGED", flush=True)
+    await asyncio.sleep(3600)
+
+
+async def _stall() -> None:
+    print("STAGED", flush=True)
+    await asyncio.sleep(6)  # the parent SIGSTOPs the process inside this window, then SIGCONTs it
+
+
+def _script(where: str) -> Script:
+    if where == "in_commit":
+        return Script(golden_calls())
+    if where == "stall":
+        return Script([*golden_calls()[:3], Step(before=_stall), *golden_calls()[3:]])
+    return Script([*golden_calls()[:3], Step(before=_hang)])
+
+
+async def _as_worker(ws: Workspace, registry_root: str) -> None:
+    stop = asyncio.Event()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
+    config = WorkerConfig(
+        owner="worker-proc",
+        queues=("current-state-modeler",),
+        poll_interval=0.1,
+        harness=execute.HarnessConfig(lease_seconds=5, renew_every=1),
+    )
+    await run_worker(
+        ws,
+        load_registry(Path(registry_root)),
+        lambda _kind: _script("mid_run").model(),
+        config,
+        stop,
+    )
+    print("STOPPED", flush=True)
+
+
 async def main(argv: list[str]) -> None:
     conninfo, endpoint, key, secret, run_id, registry_root = argv[:6]
     where = argv[6] if len(argv) > 6 else "mid_run"
@@ -44,31 +90,30 @@ async def main(argv: list[str]) -> None:
         aws_secret_access_key=secret,
         region_name="eu-central-1",
     )
-    ws: Workspace = Workspace(db, BlobStore(s3, "artifacts"), SecretGate())
-    if where == "in_commit":
-        ws = HangInsideCommit(db, BlobStore(s3, "artifacts"), SecretGate())
+    blobs = BlobStore(s3, "artifacts")
+    ws = (
+        HangInsideCommit(db, blobs, SecretGate())
+        if where == "in_commit"
+        else Workspace(db, blobs, SecretGate())
+    )
+    if where == "worker":
+        await _as_worker(ws, registry_root)
+        return
     kind = load_registry(Path(registry_root)).agents["current-state-modeler"]
     claimed = await runs.claim(
         ws, queue=kind.id, owner="doomed-worker", lease_seconds=2, run_id=run_id
     )
     assert claimed is not None
-
-    async def hang() -> None:
-        print("STAGED", flush=True)
-        await asyncio.sleep(3600)
-
-    script = Script(
-        golden_calls() if where == "in_commit" else [*golden_calls()[:3], Step(before=hang)]
-    )
-    await execute.execute(
+    final = await execute.execute(
         ws,
         claimed,
         kind,
         agent=build_modeler("m"),
-        model=script.model(),
+        model=_script(where).model(),
         prompt="go",
         config=execute.HarnessConfig(lease_seconds=2, renew_every=0.5),
     )
+    print(f"FINAL {final}", flush=True)
 
 
 if __name__ == "__main__":

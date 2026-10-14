@@ -33,6 +33,7 @@ class AgentKind(_Decl):
     id: str
     model_role: str
     prompt: str
+    toolset: Literal["flow_authoring"]
     flow_mode: FlowMode
     output_path: str
     edit_layer_path: str
