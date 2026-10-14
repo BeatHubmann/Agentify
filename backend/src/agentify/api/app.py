@@ -5,9 +5,9 @@ engagement scope, so row-level security is the second wall behind the membership
 Unknown and not-visible resources both answer 404."""
 
 import uuid
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager
-from dataclasses import asdict, dataclass, field
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import asdict
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, Request
@@ -16,36 +16,18 @@ from pydantic import BaseModel, Field
 
 from agentify import chat, inbox, intake
 from agentify.api import errors
+from agentify.api.access import Access, ApiContext, scoped
 from agentify.api.errors import BadRequest, Forbidden, NotFound
-from agentify.api.stream import STREAM_HEADERS, StreamSettings, relay
+from agentify.api.stream import STREAM_HEADERS, relay
 from agentify.editing import EditBatch, PatchRequest, apply_edit_batch
 from agentify.harness import runs
 from agentify.identity import (
-    OIDCSettings,
     Principal,
-    TokenVerifier,
-    Unauthenticated,
     grant,
-    principal_for,
 )
 from agentify.observability import logger
-from agentify.registry import FlowAgentKind, Registry
-from agentify.secretgate import SecretGate
-from agentify.store.db import Database, engagement_scope
-from agentify.store.workspace import Workspace
 
 MAX_INPUT_BYTES = 1_000_000
-
-
-@dataclass(frozen=True)
-class ApiContext:
-    db: Database
-    ws: Workspace
-    registry: Registry
-    verifier: TokenVerifier
-    oidc: OIDCSettings
-    gate: SecretGate
-    stream: StreamSettings = field(default_factory=StreamSettings)
 
 
 class EngagementIn(BaseModel):
@@ -97,48 +79,6 @@ class ConfirmationIn(BaseModel):
 
 class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
-
-
-@contextmanager
-def scoped(principal: Principal, *extra: str) -> Iterator[None]:
-    with engagement_scope(tuple(sorted({*principal.engagements, *extra}))):
-        yield
-
-
-class Access:
-    """Authentication and the service wall: who is calling, and may they touch this process."""
-
-    def __init__(self, ctx: ApiContext) -> None:
-        self.ctx = ctx
-
-    async def principal(self, request: Request) -> Principal:
-        header = request.headers.get("authorization", "")
-        if not header.lower().startswith("bearer "):
-            raise Unauthenticated("missing bearer token")
-        claims = await self.ctx.verifier.verify(header[7:].strip())
-        return await principal_for(self.ctx.db, self.ctx.oidc, claims)
-
-    async def require(self, who: Principal, process_id: str, role: str | None = None) -> str:
-        """The process's engagement, if the caller is a member (and holds `role`); 404 otherwise."""
-        with scoped(who):
-            async with self.ctx.db.tx() as conn:
-                row = await (
-                    await conn.execute(
-                        "SELECT engagement_id FROM process WHERE id = %s", (process_id,)
-                    )
-                ).fetchone()
-        engagement = None if row is None else str(row["engagement_id"])
-        if engagement is None or engagement not in who.roles:  # independent of row-level security
-            raise NotFound(process_id)
-        if role is not None and not who.has(engagement, role):
-            raise Forbidden(role)
-        return engagement
-
-    def flow_kind(self, kind_id: str) -> FlowAgentKind:
-        kind = self.ctx.registry.agents.get(kind_id)
-        if not isinstance(kind, FlowAgentKind):
-            raise BadRequest("unknown_flow_kind", f"{kind_id} is not a flow-authoring kind")
-        return kind
 
 
 def _admin_routes(app: FastAPI, ctx: ApiContext, access: Access) -> None:
