@@ -201,10 +201,31 @@ def test_the_router_has_no_write_tools(registry: Registry) -> None:
     ) == (set(), True)
 
 
+@pytest.mark.parametrize("situation", ["locked_flow", "corrupt_edit_layer"])
 async def test_from_scratch_dispatch_over_a_flow_needs_a_human_and_an_agent_cannot_confirm(
-    workspace: Workspace, registry: Registry, process_id: str
+    workspace: Workspace, registry: Registry, process_id: str, situation: str
 ) -> None:
+    from agentify.domain.canonical import canonical_json
+    from agentify.editing import EditBatch, apply_edit_batch
+    from tests.orchestration.test_admission import _commit_raw
+
     await commit_golden(workspace, registry, process_id)
+    modeler = registry.agents["current-state-modeler"]
+    if situation == "locked_flow":
+        async with workspace.db.tx() as conn:
+            head = await workspace.head_revision(conn, process_id)
+        await apply_edit_batch(
+            workspace,
+            process_id=process_id,
+            kind=modeler,
+            base_revision_id=head,  # type: ignore[arg-type]
+            user_id="consultant-1",
+            batch=EditBatch(lock=("approve",)),
+        )
+    else:
+        await _commit_raw(
+            workspace, process_id, "flows/current/edits.json", canonical_json({"broken": True})
+        )
     dispatch = (
         "dispatch_subagent",
         {"kind": "current-state-modeler", "instructions": "regenerate", "mode": "from_scratch"},
