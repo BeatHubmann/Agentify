@@ -18,12 +18,13 @@ from pydantic_ai.messages import ModelRequest
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 
+from agentify import chat
 from agentify.agents.artifact_tools import ArtifactToolDeps
 from agentify.agents.flow_tools import FlowToolDeps, lock_view
 from agentify.agents.router_tools import RouterDeps
 from agentify.domain.edits import EditLayer
 from agentify.domain.envelope import Corrupt, decode_edit_layer
-from agentify.harness import artifact_gate, gate, runs
+from agentify.harness import artifact_gate, events, gate, runs
 from agentify.harness.budget import ErrorBudget, RunAbort
 from agentify.harness.run_ports import HeadReader, RouterDispatcher, RunInbox, RunStaging
 from agentify.registry import AgentKind, ArtifactAgentKind, FlowAgentKind, Registry, RouterKind
@@ -58,6 +59,8 @@ class HarnessConfig:
     the executor stops trying; the lease runs out and the sweeper finishes the run (A§8.5)."""
     prompt_version: str | None = None
     """Recorded on every revision the run commits (A§9.5)."""
+    attachment_grace_seconds: float = 15.0
+    """A chat-attached run whose stream heartbeat is older than this is stopped like a cancel (A§8.5)."""
 
 
 @contextlib.asynccontextmanager
@@ -150,6 +153,7 @@ async def _drive_agent(
     prompt: str,
     deps: Any,
     lost: asyncio.Event,
+    grace: float,
 ) -> tuple[Outcome | None, str | None, str | None]:
     """Run the agent step by step; between steps, count retries and check the stop signals.
     Returns (stop outcome, finish reason, final text)."""
@@ -164,10 +168,13 @@ async def _drive_agent(
                 request = getattr(node, "request", None)
                 if isinstance(request, ModelRequest):
                     budget.count(request)
+                for event_kind, payload in events.from_node(node):
+                    await events.publish(ws, claimed.fence, event_kind, payload)
+                reason = None if lost.is_set() else await _stop_reason(ws, claimed, grace)
                 if lost.is_set():
                     stop = Outcome("lease_lost")
-                elif await runs.cancel_requested(ws, claimed.run_id):
-                    stop = Outcome("cancelled")
+                elif reason is not None:
+                    stop = Outcome("cancelled", reason)
                 if stop is not None:
                     agent_run.cancel()
                     break
@@ -177,6 +184,18 @@ async def _drive_agent(
         if stop is None:
             raise
     return stop, None, None
+
+
+CHAT_ENTRY_POINTS = frozenset({"chat", "router_followup"})
+
+
+async def _stop_reason(ws: Workspace, claimed: runs.ClaimedRun, grace: float) -> str | None:
+    reason = await runs.stop_requested(ws, claimed.run_id, attachment_grace_seconds=grace)
+    return (
+        None
+        if reason is None
+        else ("client disconnected" if reason == "disconnected" else "cancel requested")
+    )
 
 
 async def _gate(
@@ -204,19 +223,38 @@ async def _loop(
     output_language: str,
     lost: asyncio.Event,
     registry: Registry | None,
+    grace: float,
 ) -> Outcome:
     deps = await _deps(ws, claimed, kind, registry, output_language)
     stop, finish_reason, text = await _drive_agent(
-        ws, claimed, kind, agent=agent, model=model, prompt=prompt, deps=deps, lost=lost
+        ws,
+        claimed,
+        kind,
+        agent=agent,
+        model=model,
+        prompt=prompt,
+        deps=deps,
+        lost=lost,
+        grace=grace,
     )
     if stop is not None:
         return stop
-    if await runs.cancel_requested(ws, claimed.run_id):
-        return Outcome("cancelled")  # a cancelled run never reaches the gate
+    reason = await _stop_reason(ws, claimed, grace)
+    if reason is not None:
+        return Outcome("cancelled", reason)  # a cancelled run never reaches the gate
     if not await runs.move_to_gating(ws, claimed.fence):
         return Outcome("lease_lost")
     if isinstance(kind, RouterKind) and text is not None:
         await runs.record_result(ws, claimed.fence, text)
+        if claimed.entry_point in CHAT_ENTRY_POINTS:
+            await chat.append(
+                ws,
+                process_id=claimed.process_id,
+                author_kind="agent_run",
+                author_id=claimed.run_id,
+                content=text,
+                run_id=claimed.run_id,
+            )
     result = await _gate(ws, claimed, kind, registry, finish_reason)
     if result.unchanged:
         return Outcome("unchanged")
@@ -243,6 +281,8 @@ async def finish(
         final = await _finish(
             ws, claimed, kind, outcome, config=config or HarnessConfig(), registry=registry
         )
+        if final in runs.TERMINAL_STATES:
+            await events.publish(ws, claimed.fence, "finished", {"state": final})
         if final in runs.TERMINAL_STATES and claimed.parent_run_id is not None:
             await runs.record_continuation(ws, claimed.run_id)
     return final
@@ -304,7 +344,12 @@ async def _finish(
     if outcome.kind == "unchanged" and await runs.mark_unchanged(ws, claimed.fence):
         return "unchanged"
     if outcome.kind == "gate_passed":
-        outcome = await _commit(ws, claimed, kind, config, registry)
+        reason = await _stop_reason(ws, claimed, config.attachment_grace_seconds)
+        outcome = (
+            Outcome("cancelled", reason)
+            if reason
+            else await _commit(ws, claimed, kind, config, registry)
+        )
     if outcome.kind in {"committed", "lease_lost"}:
         return "committed" if outcome.kind == "committed" else "abandoned"
     try:
@@ -345,6 +390,7 @@ async def execute(
                 output_language=output_language,
                 lost=lost,
                 registry=registry,
+                grace=config.attachment_grace_seconds,
             )
     except asyncio.CancelledError:
         with anyio.CancelScope(shield=True):

@@ -14,6 +14,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from agentify.api.app import ApiContext, create_app
+from agentify.api.stream import StreamSettings
 from agentify.identity import OIDCSettings, TokenVerifier
 from agentify.registry import Registry
 from agentify.secretgate import SecretGate
@@ -86,8 +87,11 @@ def token(signing_key: rsa.RSAPrivateKey) -> TokenFactory:
     return make
 
 
-@pytest.fixture
-async def api(infra: Infra, registry: Registry, jwks_url: str) -> AsyncIterator[httpx.AsyncClient]:
+FAST_STREAM = StreamSettings(heartbeat_interval=0.2, attach_seconds=0.5, poll_interval=0.05)
+
+
+def api_context(infra: Infra, registry: Registry, jwks_url: str) -> ApiContext:
+    """The real API context, with stream timings shortened for tests (heartbeat 0.2 s, attachment 0.5 s)."""
     db = Database(infra.api_conninfo)
     gate = SecretGate([KNOWN_SECRET])
     oidc = OIDCSettings(
@@ -96,14 +100,21 @@ async def api(infra: Infra, registry: Registry, jwks_url: str) -> AsyncIterator[
         jwks_url=jwks_url,
         admin_subjects=frozenset({ADMIN_SUBJECT}),
     )
-    ctx = ApiContext(
+    return ApiContext(
         db=db,
         ws=Workspace(db, BlobStore(s3_client(infra), BUCKET), gate),
         registry=registry,
         verifier=TokenVerifier(oidc),
         oidc=oidc,
         gate=gate,
+        stream=FAST_STREAM,
     )
+
+
+@pytest.fixture
+async def api(infra: Infra, registry: Registry, jwks_url: str) -> AsyncIterator[httpx.AsyncClient]:
+    ctx = api_context(infra, registry, jwks_url)
+    db = ctx.db
     app = create_app(ctx)
     await db.open()
     try:

@@ -162,10 +162,14 @@ async def test_history_tables_are_append_only_for_the_application_role(
     for statement in (
         "UPDATE revision SET message = 'rewritten' WHERE process_id = %s",
         "DELETE FROM revision_path WHERE revision_id IN (SELECT id FROM revision WHERE process_id = %s)",
+        "UPDATE chat_message SET content_scrubbed = 'rewritten' WHERE process_id = %s",
+        "DELETE FROM chat_message WHERE process_id = %s",
+        "UPDATE run_event SET kind = 'rewritten' WHERE run_id IN (SELECT id FROM run WHERE process_id = %s)",
+        "DELETE FROM run_event WHERE run_id IN (SELECT id FROM run WHERE process_id = %s)",
     ):
         try:
             async with workspace.db.tx() as conn:
                 await conn.execute(statement, (process_id,))
         except psycopg.errors.InsufficientPrivilege:
             denied.append(True)
-    assert denied == [True, True]
+    assert denied == [True] * 6
