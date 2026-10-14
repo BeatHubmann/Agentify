@@ -5,12 +5,15 @@ import base64
 import hashlib
 import hmac
 import urllib.parse
+import uuid
 from typing import Any
 
 import pytest
 
 from agentify.harness import runs
 from agentify.registry import Registry
+from agentify.secretgate import Hit
+from agentify.store import security_events as security
 from agentify.store.workspace import Workspace
 from tests.conftest import BUCKET, KNOWN_SECRET, Infra, s3_client
 from tests.orchestration.test_run_exit_paths import FLOW_PATH, history, leftovers, run_once
@@ -145,3 +148,76 @@ async def test_repeating_the_same_credential_aborts_the_run(
         [],
         [(rule, fingerprint(canary))] * 2,
     )
+
+
+def holds(text: str, canary: str) -> bool:
+    return any(form.decode() in text for form in forms(canary))
+
+
+@CANARIES
+async def test_an_unexpected_exception_reaches_the_run_record_scrubbed(
+    *, workspace: Workspace, registry: Registry, process_id: str, canary: str, rule: str
+) -> None:
+    class BrokenRead(Workspace):
+        async def read_staged_or_base(self, *args: Any, **kwargs: Any) -> bytes | None:
+            raise KeyError(f"bug near {canary}")
+
+    ws = BrokenRead(workspace.db, workspace.blobs, workspace.gate)
+    run_id, final = await run_once(
+        ws, registry, process_id, Script([Step(calls=[("read_flow", {})])])
+    )
+    state = await runs.run_state(ws, run_id)
+    detail = str(state["outcome_detail_scrubbed"])
+    events = await security_events(ws, run_id)
+    assert (
+        final,
+        state["outcome"],
+        detail.splitlines()[0],
+        f"KeyError: 'bug near [REDACTED:{rule}]'" in detail,
+        holds(detail, canary),
+        [(e["exit"], e["rule"], e["fingerprint"]) for e in events],
+    ) == (
+        "rolled_back",
+        "aborted",
+        "KeyError",
+        True,
+        False,
+        [("run_record", rule, fingerprint(canary))],
+    )
+
+
+async def test_a_gate_report_quoting_an_allow_listed_value_is_stored_redacted(
+    workspace: Workspace, registry: Registry, process_id: str
+) -> None:
+    """Allow-listing lets a value into an artifact; redacting exits such as run records still redact it."""
+    sample = "xoxb-" + "1234567890-sample"  # a pattern-only token shape that a node id may take
+    engagement_id = await engagement_of(workspace, process_id)
+    admin_id = f"usr_{uuid.uuid4().hex}"
+    async with workspace.db.tx() as conn:
+        await conn.execute(
+            "INSERT INTO app_user (id, issuer, subject, is_admin) VALUES (%s, 'test', %s, true)",
+            (admin_id, admin_id),
+        )
+    await security.add_allowlist_entry(
+        workspace.db,
+        engagement_id=engagement_id,
+        hit=Hit("slack-token", fingerprint(sample)),
+        action="allow",
+        justification="sample token quoted in the client specification",
+        admin_id=admin_id,
+    )
+    container = {"id": sample, "label": "Coordinator", "kind": "orchestrator", "execution": "ai"}
+    script = Script(
+        [*golden_calls()[:-1], Step(calls=[("add_node", container)]), Step(text="done")]
+    )
+    run_id, final = await run_once(workspace, registry, process_id, script)
+    state = await runs.run_state(workspace, run_id)
+    detail = str(state["outcome_detail_scrubbed"])
+    events = await security_events(workspace, run_id)
+    assert (
+        final,
+        "container_too_few_children" in detail,
+        holds(detail, sample),
+        "[REDACTED:slack-token]" in detail,
+        [(e["exit"], e["rule"], e["fingerprint"]) for e in events],
+    ) == ("rolled_back", True, False, True, [("run_record", "slack-token", fingerprint(sample))])

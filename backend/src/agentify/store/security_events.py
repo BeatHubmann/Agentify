@@ -30,10 +30,12 @@ async def record(
     async with db.tx() as conn:
         for hit in hits:
             await conn.execute(
-                """INSERT INTO security_event
+                """WITH p AS (SELECT COALESCE(%s, (SELECT process_id FROM run WHERE id = %s)) AS id)
+                   INSERT INTO security_event
                      (engagement_id, process_id, run_id, exit, rule, fingerprint, location)
-                   VALUES ((SELECT engagement_id FROM process WHERE id = %s), %s, %s, %s, %s, %s, %s)""",
-                (process_id, process_id, run_id, exit, hit.rule, hit.fingerprint, where),
+                   SELECT (SELECT engagement_id FROM process WHERE id = p.id), p.id, %s, %s, %s, %s, %s
+                   FROM p""",
+                (process_id, run_id, run_id, exit, hit.rule, hit.fingerprint, where),
             )
 
 

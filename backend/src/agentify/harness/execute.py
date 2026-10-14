@@ -7,6 +7,7 @@ and verifies. A lost lease means another process owns the run: this executor sto
 
 import asyncio
 import contextlib
+import traceback
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -187,6 +188,13 @@ async def _drive_agent(
 
 
 CHAT_ENTRY_POINTS = frozenset({"chat", "router_followup"})
+MAX_TRACEBACK_CHARS = 4000
+
+
+def _traceback_detail(exc: BaseException) -> str:
+    """The exception type, then its traceback: the run record keeps it, scrubbed (A§10.2)."""
+    trace = "".join(traceback.format_exception(exc))
+    return f"{type(exc).__name__}\n{trace[-MAX_TRACEBACK_CHARS:]}"
 
 
 async def _stop_reason(ws: Workspace, claimed: runs.ClaimedRun, grace: float) -> str | None:
@@ -412,7 +420,7 @@ async def execute(
     except SecretFound as exc:
         outcome = Outcome("aborted", f"secret_gate: {exc.rule} at {exc.where}")
     except Exception as exc:  # noqa: BLE001 - any failure, including provider errors, ends in rollback
-        outcome = Outcome("aborted", type(exc).__name__)
+        outcome = Outcome("aborted", _traceback_detail(exc))
     with anyio.CancelScope(shield=True):
         final = await finish(ws, claimed, kind, outcome, config=config, registry=registry)
     return final
