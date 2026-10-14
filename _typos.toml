@@ -1,0 +1,12 @@
+# Spell-checking (DoD-code, A§26.4). Domain abbreviations are listed with their meaning.
+[files]
+extend-exclude = ["genesis/", "*.lock"]  # the genesis package is the operator's specification; never edited
+
+[default.extend-identifiers]
+UE = "UE"          # exit path: user edits during a run (A§22.2)
+6PN = "6PN"        # Fly.io private networking
+
+[default.extend-words]
+unparseable = "unparseable"  # the brief's spelling, kept for traceability
+PN = "PN"
+ba = "ba"          # node ids in generated test graphs ("iso-ba")

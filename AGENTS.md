@@ -18,6 +18,16 @@
 
 Order of authority: specification → signed-off architecture → task plan. Tests, code, logs and eval results are evidence, not authority. Where evidence conflicts with an approved document, surface the conflict; do not silently pick one.
 
+## Setup and checks
+
+| Command | What it does |
+|---|---|
+| `cd backend && uv sync --locked` | Install the pinned toolchain and dependencies |
+| `cd backend && make check` | Everything CI runs for the backend: `ruff format --check`, `ruff check`, `mypy --strict`, `lint-imports`, `pytest` |
+| `typos` and `gitleaks git . --redact` (repository root) | Spell check and secret scan, as in CI |
+
+`pytest` needs a running Docker daemon: orchestration and failure tests start real Postgres and MinIO containers. Without Docker they fail; they never skip silently. CI (`.github/workflows/ci.yml`) runs the same commands with actions pinned to commit SHAs.
+
 ## Working rules
 
 - **No client-derived material in this repository**, anonymized or not. The repository is public. The real eval corpus and per-case eval results live in the private EU store described in `ARCHITECTURE.md` A§26.5; only synthetic cases (labelled as such) are committed.
