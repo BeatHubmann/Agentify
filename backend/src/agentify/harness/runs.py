@@ -33,6 +33,7 @@ class ClaimedRun:
     base_revision_id: str | None
     initiated_by: str
     fence: Fence
+    instructions: str = ""
 
 
 async def _read_at(
@@ -62,6 +63,7 @@ async def admit(
     initiated_by: str,
     entry_point: str,
     intent_confirmation_id: str | None = None,
+    instructions: str = "",
 ) -> str:
     """The only function that creates runs (A§8.2). Every entry point calls it."""
     if mode not in kind.modes:
@@ -102,8 +104,8 @@ async def admit(
         try:
             await conn.execute(
                 """INSERT INTO run (id, process_id, kind, mode, state, base_revision_id, initiated_by,
-                                    entry_point, intent_confirmation_id)
-                   VALUES (%s, %s, %s, %s, 'admitted', %s, %s, %s, %s)""",
+                                    entry_point, intent_confirmation_id, instructions)
+                   VALUES (%s, %s, %s, %s, 'admitted', %s, %s, %s, %s, %s)""",
                 (
                     run_id,
                     process_id,
@@ -113,6 +115,7 @@ async def admit(
                     initiated_by,
                     entry_point,
                     intent_confirmation_id,
+                    instructions,
                 ),
             )
         except errors.UniqueViolation as exc:
@@ -186,7 +189,8 @@ async def claim(
                 """UPDATE run SET state = 'running', lease_owner = %s, lease_epoch = lease_epoch + 1,
                  lease_expires_at = now() + make_interval(secs => %s)
                WHERE id = %s AND state = 'admitted'
-               RETURNING id, process_id, kind, mode, base_revision_id, initiated_by, lease_epoch""",
+               RETURNING id, process_id, kind, mode, base_revision_id, initiated_by, lease_epoch,
+                         instructions""",
                 (owner, lease_seconds, row["run_id"]),
             )
         ).fetchone()
@@ -204,6 +208,7 @@ async def claim(
         base_revision_id=None if run["base_revision_id"] is None else str(run["base_revision_id"]),
         initiated_by=str(run["initiated_by"]),
         fence=Fence(str(run["id"]), owner, int(str(run["lease_epoch"]))),
+        instructions=str(run["instructions"]),
     )
 
 
