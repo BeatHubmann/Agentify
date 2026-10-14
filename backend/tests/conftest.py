@@ -34,6 +34,7 @@ class Infra:
     s3_endpoint: str
     s3_access_key: str
     s3_secret_key: str
+    postgres_container_id: str
 
 
 @pytest.fixture(scope="session")
@@ -61,6 +62,7 @@ def infra() -> Iterator[Infra]:
             s3_endpoint=endpoint,
             s3_access_key=config["access_key"],
             s3_secret_key=config["secret_key"],
+            postgres_container_id=pg.get_wrapped_container().id,
         )
 
 

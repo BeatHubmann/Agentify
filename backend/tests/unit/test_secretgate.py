@@ -16,6 +16,7 @@ FAKE_AWS_KEY_ID = "AKIA" + "ABCDEFGHIJKLMNOP"
         ("-----BEGIN RSA PRIVATE KEY-----", "private-key-block"),
         ("token ghp_" + "a" * 36, "github-token"),
     ],
+    ids=["known-literal", "known-base64", "aws-key-id", "private-key", "github-token"],
 )
 def test_gate_refuses_known_values_and_credential_patterns(content: str, rule: str) -> None:
     with pytest.raises(SecretFound) as hit:
