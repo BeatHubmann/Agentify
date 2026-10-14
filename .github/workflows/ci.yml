@@ -39,7 +39,7 @@ jobs:
         run: make types
       - name: Import contracts
         run: make imports
-      - name: Tests (unit, property, orchestration, failure; real Postgres and MinIO containers)
+      - name: Tests (unit, property, orchestration, failure, api; real Postgres and MinIO containers)
         run: make test
 
   secrets:

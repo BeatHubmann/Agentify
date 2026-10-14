@@ -133,6 +133,15 @@ These are the suites of A§26.2: `unit`, `property`, `analytic`, `orchestration`
 | Defects found during the slice | the read endpoints' membership check depended on row-level security, so the two walls were not independent; an explicit membership check now runs first. uvicorn's own log handlers bypassed the scrubbing filter; the server entrypoint disables them |
 | Log location | Local run; CI evidence follows on the pull request |
 
+### E-8: slice 2c-1 in CI, 2026-10-14 23:09 CEST (21:09 UTC)
+
+| Field | Value |
+|---|---|
+| Revision | `2d3dfa8` (PR #8 head; code identical to E-7's `b912f88`, plus documentation) |
+| Command | GitHub Actions workflow `ci`, run 38637776525 |
+| Results | backend checks pass (**184 passed** in 65.9 s); aislop pass; secret scan pass; spell check pass. GitHub CodeQL analysis (actions, python) also passed |
+| Log location | https://github.com/BeatHubmann/Agentify/actions/runs/38637776525 |
+
 ## 1. Invariants (§10, A§22)
 
 | ID | Requirement (short) | Source | Proof obligation (scenario) | Layer | Independent oracle | Negative control | Status |
