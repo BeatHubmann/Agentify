@@ -10,7 +10,9 @@ from typing import Literal
 from agentify.secretgate import Hit, Scrubbed, SecretFound, SecretGate
 from agentify.store.db import Database
 
-Exit = Literal["staged_write", "blob", "inbox", "chat", "run_event", "run_record", "http_body"]
+Exit = Literal[
+    "staged_write", "blob", "inbox", "chat", "run_event", "run_record", "http_body", "decision"
+]
 AllowAction = Literal["allow", "revoke"]
 
 
@@ -23,6 +25,7 @@ async def record(
     location: str,
     process_id: str | None = None,
     run_id: str | None = None,
+    engagement_id: str | None = None,
 ) -> None:
     if not hits:
         return
@@ -33,9 +36,10 @@ async def record(
                 """WITH p AS (SELECT COALESCE(%s, (SELECT process_id FROM run WHERE id = %s)) AS id)
                    INSERT INTO security_event
                      (engagement_id, process_id, run_id, exit, rule, fingerprint, location)
-                   SELECT (SELECT engagement_id FROM process WHERE id = p.id), p.id, %s, %s, %s, %s, %s
+                   SELECT COALESCE(%s, (SELECT engagement_id FROM process WHERE id = p.id)), p.id,
+                          %s, %s, %s, %s, %s
                    FROM p""",
-                (process_id, run_id, run_id, exit, hit.rule, hit.fingerprint, where),
+                (process_id, run_id, engagement_id, run_id, exit, hit.rule, hit.fingerprint, where),
             )
 
 

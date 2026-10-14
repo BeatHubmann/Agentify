@@ -18,6 +18,7 @@ from agentify import chat, inbox, intake
 from agentify.api import errors
 from agentify.api.access import Access, ApiContext, scoped
 from agentify.api.errors import BadRequest, Forbidden, NotFound
+from agentify.api.security_routes import security_routes
 from agentify.api.stream import STREAM_HEADERS, relay
 from agentify.editing import EditBatch, PatchRequest, apply_edit_batch
 from agentify.harness import runs
@@ -393,6 +394,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
 
     access = Access(ctx)
     _chat_routes(app, ctx, access)
+    security_routes(app, ctx, access)
     _admin_routes(app, ctx, access)
     _process_read_routes(app, ctx, access)
     _process_write_routes(app, ctx, access)

@@ -30,6 +30,10 @@ class BadRequest(Exception):
         self.code = code
 
 
+class Unprocessable(BadRequest):
+    """A well-formed request the rules refuse (422)."""
+
+
 _INBOX_STATUS = {"human_answer_required": 403, "unknown_item": 404}
 
 
@@ -57,6 +61,8 @@ def install(app: FastAPI, gate: SecretGate, db: Database) -> None:
                 return (403, "forbidden", f"This action requires the {role} role.")
             case NotFound():
                 return (404, "not_found", "Not found.")
+            case Unprocessable(code=code):
+                return (422, code, str(exc))
             case BadRequest(code=code):
                 return (400, code, str(exc))
             case runs.AdmissionRefused(code=code, detail=detail):

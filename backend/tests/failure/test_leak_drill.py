@@ -270,3 +270,31 @@ async def test_an_agent_question_carrying_a_credential_is_correctable_and_never_
         True,
         [("run_event", rule, fingerprint(canary)), ("inbox", rule, fingerprint(canary))],
     )
+
+
+async def test_an_allow_list_entry_never_applies_in_another_engagement_past_row_level_security(
+    workspace: Workspace,
+) -> None:
+    """The worker role bypasses row-level security, so the engagement filter itself must hold."""
+    engagements = [f"eng-{uuid.uuid4().hex[:8]}" for _ in range(2)]
+    for engagement in engagements:
+        await workspace.create_process(engagement, f"proc-{uuid.uuid4().hex[:12]}")
+    admin_id = f"usr_{uuid.uuid4().hex}"
+    async with workspace.db.tx() as conn:
+        await conn.execute(
+            "INSERT INTO app_user (id, issuer, subject, is_admin) VALUES (%s, 'test', %s, true)",
+            (admin_id, admin_id),
+        )
+    hit = Hit("aws-access-key-id", fingerprint(PATTERN_ONLY))
+    await security.add_allowlist_entry(
+        workspace.db,
+        engagement_id=engagements[0],
+        hit=hit,
+        action="allow",
+        justification="sample key in the specification",
+        admin_id=admin_id,
+    )
+    assert [await security.allowed(workspace.db, e) for e in engagements] == [
+        frozenset({hit}),
+        frozenset(),
+    ]
