@@ -7,7 +7,7 @@ caused them."""
 from collections.abc import Sequence
 from typing import Literal
 
-from agentify.secretgate import Hit, SecretGate
+from agentify.secretgate import Hit, Scrubbed, SecretFound, SecretGate
 from agentify.store.db import Database
 
 Exit = Literal["staged_write", "blob", "inbox", "chat", "run_event", "run_record", "http_body"]
@@ -37,6 +37,38 @@ async def record(
                    FROM p""",
                 (process_id, run_id, run_id, exit, hit.rule, hit.fingerprint, where),
             )
+
+
+async def checked(
+    db: Database,
+    gate: SecretGate,
+    data: bytes,
+    *,
+    exit: Exit,
+    location: str,
+    process_id: str,
+    run_id: str | None = None,
+) -> Scrubbed[bytes]:
+    """The write check for an exit that fails writes, with the engagement's allow-list. A hit is
+    recorded, then raised as `SecretFound`."""
+    async with db.tx() as conn:
+        row = await (
+            await conn.execute("SELECT engagement_id FROM process WHERE id = %s", (process_id,))
+        ).fetchone()
+    permitted = frozenset() if row is None else await allowed(db, str(row["engagement_id"]))
+    try:
+        return gate.check_bytes(data, where=location, allowed=permitted)
+    except SecretFound as exc:
+        await record(
+            db,
+            gate,
+            exit=exit,
+            hits=[exc.hit],
+            location=location,
+            process_id=process_id,
+            run_id=run_id,
+        )
+        raise
 
 
 async def hits_in_run(db: Database, run_id: str, hit: Hit) -> int:

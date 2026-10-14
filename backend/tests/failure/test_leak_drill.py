@@ -17,6 +17,7 @@ from agentify.store import security_events as security
 from agentify.store.workspace import Workspace
 from tests.conftest import BUCKET, KNOWN_SECRET, Infra, s3_client
 from tests.orchestration.test_run_exit_paths import FLOW_PATH, history, leftovers, run_once
+from tests.support.agents import add_process_input, run_kind, section_steps
 from tests.support.gates import FINGERPRINT_KEY
 from tests.support.scripted import Script, Step, golden_calls
 
@@ -221,3 +222,31 @@ async def test_a_gate_report_quoting_an_allow_listed_value_is_stored_redacted(
         "[REDACTED:slack-token]" in detail,
         [(e["exit"], e["rule"], e["fingerprint"]) for e in events],
     ) == ("rolled_back", True, False, True, [("run_record", "slack-token", fingerprint(sample))])
+
+
+async def inbox_rows(ws: Workspace, process_id: str) -> str:
+    async with ws.db.tx() as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT row_to_json(i)::text AS r FROM inbox_item i WHERE process_id = %s",
+                (process_id,),
+            )
+        ).fetchall()
+    return " ".join(str(r["r"]) for r in rows)
+
+
+@CANARIES
+async def test_an_agent_question_carrying_a_credential_is_correctable_and_never_stored(
+    *, workspace: Workspace, registry: Registry, process_id: str, canary: str, rule: str
+) -> None:
+    await add_process_input(workspace, process_id)
+    question = {"category": "spec-clarification", "question": f"Is {canary} the vendor's key?"}
+    script = Script([Step(calls=[("inbox_ask", question)]), *section_steps("current")])
+    run_id, final = await run_kind(workspace, registry, process_id, "spec-section-current", script)
+    events = await security_events(workspace, run_id)
+    assert (
+        final,
+        holds(await inbox_rows(workspace, process_id), canary),
+        "secret_in_content" in str(script.seen[1][-1]),
+        [(e["exit"], e["rule"], e["fingerprint"]) for e in events],
+    ) == ("committed", False, True, [("inbox", rule, fingerprint(canary))])

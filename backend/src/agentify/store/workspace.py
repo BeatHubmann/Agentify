@@ -178,12 +178,18 @@ class Workspace:
     async def stage(self, fence: Fence, process_id: str, path: str, data: bytes) -> str:
         """Write into the run's private staging, fenced by its lease. Returns the blob hash. A gate
         hit raises `SecretFound`, unless the engagement allow-lists that fingerprint (A§18.3)."""
-        async with self.db.tx() as conn:
-            engagement_id = await self.engagement_of(conn, process_id)
-        allowed = await security_events.allowed(self.db, engagement_id)
-        scrubbed = self.gate.check_bytes(data, where=path, allowed=allowed)
+        scrubbed = await security_events.checked(
+            self.db,
+            self.gate,
+            data,
+            exit="staged_write",
+            location=path,
+            process_id=process_id,
+            run_id=fence.run_id,
+        )
         sha = sha256_hex(scrubbed.value)
         async with self.db.tx() as conn:
+            engagement_id = await self.engagement_of(conn, process_id)
             pinned = await conn.execute(
                 """INSERT INTO blob_pin (engagement_id, blob_sha256, pinned_by_run)
                    SELECT %s, %s, %s WHERE EXISTS (
