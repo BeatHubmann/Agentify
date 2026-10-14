@@ -174,9 +174,10 @@ backend/
     store/           Postgres repositories, blob store, revisions, run staging,
                      runtime-state store (separate module, separate bucket)
     harness/         admission, run state machine, queue, cancellation, gate, commit,
-                     verified rollback, sweeper, error budget, artifact locks
+                     verified rollback, sweeper, error budget, artifact locks, worker loop
+    editing/         user-edit batches: server-side anchors, 409 on a stale base, commit as a user revision
     agents/          router, subagent kinds, flow-authoring tools, profiling agent,
-                     contract agent; scripted-model seam
+                     contract agent; catalog building each kind's agent from its declared toolset
     llm/             provider abstraction, per-role model policy, budget ledger
     sandboxgw/       sandbox model gateway: Bedrock pass-through over llm/
     exchange/        sandbox exchange: per-job bundle download and result upload
@@ -247,6 +248,7 @@ run(id, process_id, kind, mode, state, base_revision_id, initiated_by, entry_poi
     lease_owner, lease_epoch, lease_expires_at,            -- fencing token (A§8.4)
     cancel_requested_at, stream_attached_until NULL,       -- durable disconnect detection (A§8.5)
     staged_paths TEXT[],                                   -- snapshot used by rollback verification
+    instructions TEXT,                                     -- what the router or API asked the run to do
     outcome, outcome_detail_scrubbed, error_budget_json, created_at, finished_at)
 run_staging(run_id, path, blob_sha256, schema_version, written_at)   -- the run's private writes
 blob_pin(engagement_id, blob_sha256, pinned_by_run, pinned_at)       -- protects blobs from GC (A§7.3)
@@ -865,7 +867,7 @@ Write tools are constructed per run from the agent kind's declaration: each tool
 registry/
   phases/<phase>.yaml            id, order, label key, panel
   skills/<skill>.md              frontmatter: name, phase, description, agent_kinds, inbox_categories
-  agents/<kind>.yaml             prompt ref, model role, tools, input paths, output paths,
+  agents/<kind>.yaml             prompt ref, model role, toolset, input paths, output paths,
                                  gate thresholds, budgets, modes
   artifacts/<type>.yaml          path pattern, schema ref (a JSON Schema in registry/schemas/ for new types),
                                  diff kind, writer kinds, gate (declared checks from the check library,
