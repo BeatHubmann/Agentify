@@ -1,0 +1,16 @@
+# Agent kind declaration (A§9.4). Data only: the harness builds tools, gate and budgets from it.
+id: current-state-modeler
+model_role: current-state-modeler
+prompt: current-state-modeler.md
+flow_mode: current
+output_path: flows/current/flow.json
+edit_layer_path: flows/current/edits.json
+modes: [from_scratch, incremental]
+gate:
+  min_nodes: 3
+  max_shrink: 0.3
+budgets:
+  request_limit: 40
+  errors_per_tool: 5
+  errors_per_class: 8
+  errors_per_run: 20

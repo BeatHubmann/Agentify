@@ -1,0 +1,10 @@
+# Expectations are data, versioned with the corpus (brief §12.5D). Synthetic case.
+id: minimal-linear-4
+synthetic: true
+run_kind: current-state-modeler
+expect:
+  valid: true
+  node_count: {min: 4, max: 4}
+  executions: [external, ai, deterministic, human]
+  linear: true
+judged: []
