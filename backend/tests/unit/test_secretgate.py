@@ -32,3 +32,11 @@ def test_gate_passes_ordinary_process_text() -> None:
 def test_scrubbed_cannot_be_forged_outside_the_gate() -> None:
     with pytest.raises(TypeError):
         Scrubbed(b"x", object())
+
+
+def test_redaction_keeps_text_and_removes_known_values_and_patterns() -> None:
+    gate = SecretGate([KNOWN])
+    text = f"user said {KNOWN} and pasted {FAKE_AWS_KEY_ID} into the chat"
+    assert gate.redact_text(text).value == (
+        "user said [REDACTED:known-value] and pasted [REDACTED:aws-access-key-id] into the chat"
+    )
