@@ -1,6 +1,6 @@
 # Agentify: architecture
 
-> **Status:** signed off by the operator at gate G2 on 2026-10-14 (PR #1), together with the approvals recorded in A§1.1. This document describes the whole designed system; most of it is not built yet. What is built and what is verified is recorded per requirement in `VERIFICATION.md`, and summarized in `README.md`. Build progress: step 1 of A§27 and slices 2a to 2e of step 2, whose open rows are listed in the post-slice-2 checkpoint (`1c4ffa4`, 2026-10-15). Changes to this document now go through governed development: a PR that states the change and its reason.
+> **Status:** signed off by the operator at gate G2 on 2026-10-14 (PR #1), together with the approvals recorded in A§1.1. This document describes the whole designed system; most of it is not built yet. What is built and what is verified is recorded per requirement in `VERIFICATION.md`, and summarized in `README.md`. Build progress: steps 1 and 2 of A§27 (step 2 closed 2026-10-15 with its carried rows listed in the close-out record in `VERIFICATION.md`), and slice 3.1 of step 3. Changes to this document now go through governed development: a PR that states the change and its reason.
 > **Authority:** `genesis/PRODUCTION-BRIEF.md` and `genesis/IMPLEMENTATION-PROMPT.md` are the specification. This document is the design that answers them. Where it departs from the brief, §25 says so, with reasons. Section references like "§6.3" point into the brief; "A§n" points into this document.
 > **Date:** 2026-10-14.
 
@@ -72,6 +72,9 @@ Recorded 2026-10-14 (gate G1). They are binding inputs; changing one is an opera
 | OD-25 | Outcome reporting (2026-10-15) | Evaluations report containment (SC-1, wording unchanged), task completion and semantic quality separately. Thresholds are proposed in 3.2 and approved before any candidate is scored |
 | OD-26 | Model access for development (2026-10-15) | A local AWS SSO profile with Bedrock invoke-only rights in `eu-central-1`; no keys in the repository or in CI, where models stay scripted. A hard spend cap, set when 3.1 starts, enforced by `LedgerModel` |
 | OD-27 | Rule pack `agentify-core@1.1.0` (2026-10-15) | Approved as drafted in A§12.4.1. It replaces `1.0.0` for the oversight and escalation rules; the autonomy ceilings, the other two blocking rules and the advisory rules are unchanged |
+| OD-26a | Development credentials (2026-10-15, amends OD-26) | The operator's AWS projects ("new AWS experience") let custom roles be created but not assumed, and refuse credential renewal (`signin:CreateOAuth2Token`), both by organization policy. Development runs therefore use the project's own login role through profile `agentify-bedrock` (full account access, about 15 minutes per sign-in, no keys). Agentify's code still uses only `eu-central-1`, the policy's EU profiles and the ledger's caps. Invoke-only roles (A§17.2) remain required for staging and production, in an account where custom roles work |
+| OD-28 | A registered credential in model output (2026-10-15) | A§18.2 prevails over A§10.2: a request carrying a registered value is refused and the run aborts with `known_value_in_model_request`, even when the value came from the model's own earlier tool call. Pattern-only matches stay correctable once |
+| OD-29 | Plumbing-only model (2026-10-15) | While Claude is not available to the development account, the live check may run on an EU in-region, on-demand Bedrock model (first GLM 4.7 Flash in `eu-central-1`), with a one-model policy built by the test. The shipped policy and OD-4 are unchanged; the result is plumbing evidence only |
 
 ### 1.1 G2 approvals (2026-10-14)
 
@@ -911,7 +914,7 @@ One closed corrective loop, every link in code (§6.3): **self-validating tools 
 
 | Class | Examples | Reaches the model as | Counted | Aborts the run |
 |---|---|---|---|---|
-| **Correctable** | schema or integrity violation from a mutation; reference to a missing node, edge, output or path; non-unique or non-matching patch search string; write to an undeclared path; attempt to change a locked item (incremental mode); archetype–execution contradiction; transient artifact read failure; tool arguments that fail validation (the usual symptom of truncation) and unknown tool names, both retried by the framework itself; profile inconsistency; contract error; blocking finding from the governance pre-check; content in a staged write that the secret gate flags (hint: remove or paraphrase the credential-like text) | A retry prompt carrying a JSON payload: `{error, message, location, hint, attempts_left}` | Yes: per tool, per error class, and per run (A§10.3) | Only when a budget is exhausted |
+| **Correctable** | schema or integrity violation from a mutation; reference to a missing node, edge, output or path; non-unique or non-matching patch search string; write to an undeclared path; attempt to change a locked item (incremental mode); archetype–execution contradiction; transient artifact read failure; tool arguments that fail validation (the usual symptom of truncation) and unknown tool names, both retried by the framework itself; profile inconsistency; contract error; blocking finding from the governance pre-check; content in a staged write that the secret gate flags by pattern (hint: remove or paraphrase the credential-like text); a registered credential value aborts instead (OD-28, A§18.2) | A retry prompt carrying a JSON payload: `{error, message, location, hint, attempts_left}` | Yes: per tool, per error class, and per run (A§10.3) | Only when a budget is exhausted |
 | **Abort** | error budget exhausted; request cap reached (`UsageLimitExceeded`); money budget exhausted; cancel / disconnect / runtime cancellation; lease lost; staging storage unavailable after bounded internal retries; provider authentication failure (401/403); provider unavailable after bounded backoff (5xx, throttling); framework `UnexpectedModelBehavior`; any unexpected exception in tool code (a bug); a second secret-gate hit on the same fingerprint in one run, outcome `secret_gate_repeated` (reported to the user with the location, not the value) | Not sent; the run ends | — | Yes: rollback, verified, reason recorded |
 
 Unexpected exceptions are aborts, not correctable errors, on purpose: an unknown failure in tool code means the tool's own validation cannot be trusted for that call. It is recorded (scrubbed traceback in the run record) and shows up in retry statistics. Spike S1 showed that a plain exception in a Pydantic AI tool propagates out of the run, so the tool wrapper converts it explicitly instead of relying on framework behavior.
@@ -1209,14 +1212,14 @@ Not in release 1 (OD-12, OD-14). The data model (A§6.7), lifecycle (A§11.3), h
 
 ### 17.1 One abstraction (§6.8)
 
-`llm.model_for(role: ModelRole, context: CallContext) -> Model` is the only constructor of model clients. It:
+`llm.model_for(role, context, *, policy, source) -> LedgerModel` is the only constructor of model clients. `execute` calls it for every run from a model *source* (Bedrock in deployment, a scripted model in tests), so no caller can hand the harness a model outside the ledger (BC-B.M4). It:
 
-- builds a `boto3` Bedrock Runtime client **explicitly** from credentials obtained for this call (A§17.2) and region `eu-central-1`, and passes it to Pydantic AI's Bedrock model as `bedrock_client`. Credentials are never left for the SDK to discover from the environment: research showed the provider otherwise falls back to environment variables, which is the "provider inferred" hazard in another form (HZ-4);
+- builds a `boto3` Bedrock Runtime client **explicitly** from credentials obtained for this call (A§17.2), region and endpoint `eu-central-1`, with endpoints configured through the environment or shared config files ignored, and passes it to Pydantic AI's Bedrock model as `bedrock_client`. Credentials are never left for the SDK to discover from the environment: research showed the provider otherwise falls back to environment variables, which is the "provider inferred" hazard in another form (HZ-4);
 - resolves the role's model id from the per-role model policy (configuration, A§17.4); only `eu.` inference-profile ids are accepted by configuration validation;
 - computes model settings **per model** (max output tokens sized for writing agents, caching points, effort where supported);
 - wraps the model in a `LedgerModel` (A§17.3) and an instrumentation wrapper.
 
-Agents, the eval judge, the sandbox gateway and every later capability get models only from here; import-linter forbids importing provider modules elsewhere (§6.8: no feature bypasses the abstraction).
+Agents, the eval judge, the sandbox gateway and every later capability get models only from here; a static test forbids provider modules and Bedrock clients anywhere else (§6.8: no feature bypasses the abstraction). Import-linter cannot express it: it forbids only top-level external packages. Streamed requests are refused by `LedgerModel` until they are accounted.
 
 ### 17.2 Credentials
 
@@ -1229,15 +1232,15 @@ Agents, the eval judge, the sandbox gateway and every later capability get model
 
 AWS Budgets refreshes a few times a day and alerts may arrive after spending passes a threshold (research R1), so enforcement is in Agentify:
 
-- `LedgerModel.request()` **reserves** the worst-case cost of the call (input tokens estimated from the request, plus the max output tokens, at the model's price table) against every applicable scope (run, process, engagement, deployment) in one transaction, using `budget_limit` per scope and period. If any scope would exceed its limit, the call is refused and the run aborts with `money_budget_exhausted`.
-- After the call it **settles** with actual usage from the response (Bedrock returns token counts), releasing the difference.
+- `LedgerModel.request()` first refuses a request that carries a registered credential value (A§18.2, OD-28). It then **reserves** the worst-case cost of the call against every applicable scope (run, process, engagement, deployment) in one transaction, using `budget_limit` per scope and period. The worst case bounds input tokens by the request's serialized size (no token is shorter than a byte) plus framing, priced at the dearer of the input and cache-write rates, and output by the model's max tokens, which `LedgerModel` enforces. If any scope would exceed its limit, the call is refused and the run aborts with `money_budget_exhausted`. The run's limit is its kind's `money_usd` (OPS-4). A deployment without a limit has a limit of zero: nothing can be spent until an operator sets one. Only operators set limits; the application roles can read them.
+- After the call it **settles** with actual usage from the response (Bedrock returns token counts; cache reads and writes are priced at their own rates), releasing the difference. A call the provider rejects with a 4xx status is released (it was never run); any other failure, a cancellation included, settles at the worst case, because it may have been billed.
 - Reservations are never left open: a run's open reservations are released in `finish`, and the sweeper releases reservations of finished or lost runs.
 - The **remaining budget** shown in the UI is computed from the ledger (§5 budget indicator); per-run cost is shown alongside it (§11.6).
 - AWS Budgets alarms on the account act as a backstop, not the control.
 
 ### 17.4 Model policy (per role, configuration)
 
-`config/model-policy.yaml` maps roles (router, spec-section, synthesis, current-state-modeler, redesigner, profiler, contract-drafter, build-planner, judge, codegen) to an EU model id, settings and an optional fallback chain. Release 1 starts **every role on the same capable model** (Opus 5.5 or Sonnet 5.5, chosen by the first eval run) and changes a role's model only when the eval harness shows no regression (§8.1). Fallback chains stay within EU profiles.
+`config/model-policy.yaml` maps roles (router, spec-section, synthesis, current-state-modeler, redesigner, profiler, contract-drafter, build-planner, judge, codegen) to an EU model id, settings and an optional fallback chain, with each model's Bedrock prices and their source (the AWS Pricing API's on-demand rates for EU geographic profiles in `eu-central-1`). It is validated at load: region `eu-central-1`, only `eu.anthropic.claude-{opus,sonnet,haiku}-*` profiles, every registry role covered, every model priced. Release 1 starts **every role on the same capable model** (Opus 5.5 or Sonnet 5.5, chosen by the first eval run) and changes a role's model only when the eval harness shows no regression (§8.1). Fallback chains stay within EU profiles.
 
 ### 17.5 Corporate gateway option (OD-5)
 

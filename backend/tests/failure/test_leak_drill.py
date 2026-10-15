@@ -25,9 +25,10 @@ from tests.support.scripted import Script, Step, golden_calls
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 # Built at runtime so the repository holds no credential-shaped literal.
 PATTERN_ONLY = "AKIA" + "QWERTYUIOPASDFGH"
+PATTERN_RULE = "aws-access-key-id"
 CANARIES = pytest.mark.parametrize(
     ("canary", "rule"),
-    [(KNOWN_SECRET, "known-value"), (PATTERN_ONLY, "aws-access-key-id")],
+    [(KNOWN_SECRET, "known-value"), (PATTERN_ONLY, PATTERN_RULE)],
     ids=["known-value", "pattern-only"],
 )
 
@@ -83,16 +84,11 @@ def leaking_node(canary: str) -> Step:
     )
 
 
-@CANARIES
 async def test_a_staged_write_carrying_a_credential_is_correctable_once(
-    *,
-    infra: Infra,
-    workspace: Workspace,
-    registry: Registry,
-    process_id: str,
-    canary: str,
-    rule: str,
+    *, infra: Infra, workspace: Workspace, registry: Registry, process_id: str
 ) -> None:
+    """Pattern-only: the model may correct it. A registered value ends the run instead (below)."""
+    canary, rule = PATTERN_ONLY, PATTERN_RULE
     script = Script([leaking_node(canary), *golden_calls()])
     run_id, final = await run_once(workspace, registry, process_id, script)
     events = await security_events(workspace, run_id)
@@ -125,16 +121,45 @@ async def test_a_staged_write_carrying_a_credential_is_correctable_once(
     )
 
 
-@CANARIES
-async def test_repeating_the_same_credential_aborts_the_run(
-    *,
-    infra: Infra,
-    workspace: Workspace,
-    registry: Registry,
-    process_id: str,
-    canary: str,
-    rule: str,
+@pytest.mark.parametrize("where", ["staged_write", "inbox"])
+async def test_a_model_that_writes_a_registered_credential_ends_the_run_before_it_is_sent_back(
+    *, infra: Infra, workspace: Workspace, registry: Registry, process_id: str, where: str
 ) -> None:
+    """A§18.2 over A§10.2 (operator decision 2026-10-15): the correction request would carry the
+    model's own call holding the value, so the request is refused and the run aborts."""
+    if where == "inbox":
+        await add_process_input(workspace, process_id)
+        question = {"category": "spec-clarification", "question": f"Is {KNOWN_SECRET} the key?"}
+        script = Script([Step(calls=[("inbox_ask", question)]), *section_steps("current")])
+        run_id, final = await run_kind(
+            workspace, registry, process_id, "spec-section-current", script
+        )
+    else:
+        script = Script([leaking_node(KNOWN_SECRET), *golden_calls()])
+        run_id, final = await run_once(workspace, registry, process_id, script)
+    state = await runs.run_state(workspace, run_id)
+    sent = " ".join(str(messages) for messages in script.seen)
+    assert (
+        final,
+        str(state["outcome_detail_scrubbed"]).split(":")[0],
+        len(script.seen),
+        any(form.decode() in sent for form in forms(KNOWN_SECRET)),
+        stored_objects_holding(infra, await engagement_of(workspace, process_id), KNOWN_SECRET),
+        [(e["exit"], e["rule"]) for e in await security_events(workspace, run_id)],
+    ) == (
+        "rolled_back",
+        "known_value_in_model_request",
+        1,  # the request after the write never reached the model
+        False,
+        [],
+        [("run_event", "known-value"), (where, "known-value"), ("model_request", "known-value")],
+    )
+
+
+async def test_repeating_the_same_credential_aborts_the_run(
+    *, infra: Infra, workspace: Workspace, registry: Registry, process_id: str
+) -> None:
+    canary, rule = PATTERN_ONLY, PATTERN_RULE
     script = Script([leaking_node(canary), leaking_node(canary), *golden_calls()])
     run_id, final = await run_once(workspace, registry, process_id, script)
     state = await runs.run_state(workspace, run_id)
@@ -251,10 +276,10 @@ async def inbox_rows(ws: Workspace, process_id: str) -> str:
     return " ".join(str(r["r"]) for r in rows)
 
 
-@CANARIES
 async def test_an_agent_question_carrying_a_credential_is_correctable_and_never_stored(
-    *, workspace: Workspace, registry: Registry, process_id: str, canary: str, rule: str
+    workspace: Workspace, registry: Registry, process_id: str
 ) -> None:
+    canary, rule = PATTERN_ONLY, PATTERN_RULE
     await add_process_input(workspace, process_id)
     question = {"category": "spec-clarification", "question": f"Is {canary} the vendor's key?"}
     script = Script([Step(calls=[("inbox_ask", question)]), *section_steps("current")])
@@ -353,16 +378,18 @@ async def test_concurrent_runs_never_leak_each_others_credentials(
         refused,
         [workspace.gate.redact_text(c).value for c in credentials],
     ) == (
-        ["committed", "committed"],
+        ["rolled_back", "rolled_back"],  # each model wrote the other run's credential (A§18.2)
         [],
         [
             [
                 ("run_event", fingerprint(credentials[1])),
                 ("staged_write", fingerprint(credentials[1])),
+                ("model_request", fingerprint(credentials[1])),
             ],
             [
                 ("run_event", fingerprint(credentials[0])),
                 ("staged_write", fingerprint(credentials[0])),
+                ("model_request", fingerprint(credentials[0])),
             ],
         ],
         list(credentials),  # registered only while their runs lived

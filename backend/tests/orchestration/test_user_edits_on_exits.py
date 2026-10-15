@@ -26,7 +26,7 @@ from tests.orchestration.test_run_exit_paths import (
 )
 from tests.orchestration.test_user_edits import edit, edit_layer, relabel
 from tests.support.flows import edge, node
-from tests.support.scripted import Script, Step
+from tests.support.scripted import Script, ScriptedSource, Step
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 USER_LABEL = "edited during the run"
@@ -199,7 +199,7 @@ async def runtime_cancel(
             claimed,
             kind,
             agent=build_modeler(registry.prompt_text(kind)),
-            model=script.model(),
+            source=ScriptedSource(script),
             prompt="Model the process.",
         )
     )

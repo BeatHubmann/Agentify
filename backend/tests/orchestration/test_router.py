@@ -18,7 +18,7 @@ from agentify.registry import AgentKind, Registry
 from agentify.store.workspace import Workspace
 from tests.orchestration.test_run_exit_paths import commit_golden
 from tests.support.agents import add_process_input, run_kind, section_steps, synthesis_steps
-from tests.support.scripted import Script, Step
+from tests.support.scripted import Script, ScriptedSource, Step
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 SECTION_KINDS = ("spec-section-current", "spec-section-desired", "spec-section-constraints")
@@ -34,7 +34,7 @@ class Scripts:
     def __call__(self, kind: AgentKind) -> object:
         script = self.plan[kind.id].popleft()()
         self.used[kind.id].append(script)
-        return script.model()
+        return ScriptedSource(script)
 
 
 async def run_worker_until(

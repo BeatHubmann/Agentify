@@ -9,7 +9,7 @@ import asyncio
 import contextlib
 import traceback
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import anyio
@@ -19,7 +19,7 @@ from pydantic_ai.messages import ModelRequest
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 
-from agentify import chat
+from agentify import chat, llm
 from agentify.agents.artifact_tools import ArtifactToolDeps
 from agentify.agents.flow_tools import FlowToolDeps, lock_view
 from agentify.agents.router_tools import RouterDeps
@@ -28,9 +28,11 @@ from agentify.domain.envelope import Corrupt, decode_edit_layer
 from agentify.harness import artifact_gate, events, gate, runs
 from agentify.harness.budget import ErrorBudget, RunAbort
 from agentify.harness.run_ports import HeadReader, RouterDispatcher, RunInbox, RunStaging
+from agentify.llm.policy import SHIPPED_POLICY
 from agentify.observability import logger
 from agentify.registry import AgentKind, ArtifactAgentKind, FlowAgentKind, Registry, RouterKind
 from agentify.secretgate import SecretFound
+from agentify.store import budget
 from agentify.store.workspace import (
     AgentRunWriter,
     BaseMovedConflict,
@@ -63,6 +65,12 @@ class HarnessConfig:
     """Recorded on every revision the run commits (A§9.5)."""
     attachment_grace_seconds: float = 15.0
     """A chat-attached run whose stream heartbeat is older than this is stopped like a cancel (A§8.5)."""
+    policy: llm.ModelPolicy = field(
+        default_factory=lambda: llm.load_policy(SHIPPED_POLICY, roles=set())
+    )
+    """Which model each role uses, at which prices (A§17.4)."""
+    deployment: str = "local"
+    """The deployment budget scope every call is also counted against (A§17.3)."""
 
 
 @contextlib.asynccontextmanager
@@ -92,6 +100,20 @@ async def _lease_keeper(
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+async def _call_context(
+    ws: Workspace, claimed: runs.ClaimedRun, kind: AgentKind, config: HarnessConfig
+) -> llm.CallContext:
+    async with ws.db.tx() as conn:
+        engagement = await ws.engagement_of(conn, claimed.process_id)
+    return llm.CallContext(
+        db=ws.db,
+        gate=ws.gate,
+        scopes=budget.Scopes(claimed.run_id, claimed.process_id, engagement),
+        deployment=config.deployment,
+        run_ceiling=int(kind.budgets.money_usd * 1_000_000),
+    )
 
 
 async def _edit_layer_at_base(
@@ -299,6 +321,7 @@ async def finish(
         final = await _finish(
             ws, claimed, kind, outcome, config=config or HarnessConfig(), registry=registry
         )
+        await budget.release_run(ws.db, claimed.run_id)  # reservations are never left open
         if final in runs.TERMINAL_STATES:
             await events.publish(ws, claimed.fence, "finished", {"state": final})
         if final in runs.TERMINAL_STATES and claimed.parent_run_id is not None:
@@ -387,7 +410,7 @@ async def execute(
     kind: AgentKind,
     *,
     agent: Agent[Any, str],
-    model: Model,
+    source: llm.ModelSource,
     prompt: str,
     output_language: str = "en",
     config: HarnessConfig | None = None,
@@ -395,12 +418,20 @@ async def execute(
     credentials: Sequence[str] = (),
 ) -> str:
     """Run one claimed run to a final state. `credentials` are its per-request credentials (A§17.2):
-    known values in every sink, other runs' included, until the run, its `finish` too, is over."""
+    known values in every sink, other runs' included, until the run, its `finish` too, is over.
+    The model is built here, from `source`, through `llm.model_for`: every call the run makes is
+    gated and accounted, whatever the source (A§17.1, BC-B.M4)."""
     config = config or HarnessConfig()
     with ws.gate.registered(credentials):
         lost = asyncio.Event()
         outcome: Outcome
         try:
+            model = llm.model_for(
+                kind.model_role,
+                await _call_context(ws, claimed, kind, config),
+                policy=config.policy,
+                source=source,
+            )
             async with _lease_keeper(ws, claimed.fence, config, lost):
                 outcome = await _loop(
                     ws,
@@ -427,6 +458,10 @@ async def execute(
             raise
         except RunAbort as exc:
             outcome = Outcome("aborted", f"{exc.reason}: {exc.detail}")
+        except budget.BudgetExhausted as exc:
+            outcome = Outcome("aborted", f"money_budget_exhausted: {exc}")
+        except llm.KnownCredentialInRequest as exc:
+            outcome = Outcome("aborted", f"known_value_in_model_request: {exc}")
         except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
             outcome = Outcome("aborted", type(exc).__name__)
         except LeaseLost:

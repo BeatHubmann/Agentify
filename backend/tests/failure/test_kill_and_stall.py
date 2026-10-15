@@ -17,7 +17,7 @@ from agentify.store.workspace import LeaseLost, Workspace
 from tests.conftest import REGISTRY_ROOT, Infra
 from tests.orchestration.test_run_exit_paths import commit_golden, head_flow, history, leftovers
 from tests.orchestration.test_user_edits import edit, edit_layer, relabel
-from tests.support.scripted import Script, golden_calls
+from tests.support.scripted import Script, ScriptedSource, golden_calls
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 BACKEND = Path(__file__).resolve().parents[2]
@@ -161,7 +161,7 @@ async def test_stalled_executor_cannot_write_or_commit_after_the_sweeper_took_ov
         stalled,
         kind,
         agent=build_modeler("m"),
-        model=Script(golden_calls()).model(),
+        source=ScriptedSource(Script(golden_calls())),
         prompt="go",
     )
     state = await runs.run_state(workspace, run_id)

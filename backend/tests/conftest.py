@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import boto3
+import psycopg
 import pytest
 from testcontainers.community.minio import MinioContainer
 from testcontainers.community.postgres import PostgresContainer
@@ -24,6 +25,7 @@ APP_PASSWORD = "app-password-for-tests"  # throwaway container credential
 BUCKET = "artifacts"
 REGISTRY_ROOT = Path(__file__).resolve().parents[2] / "registry"
 KNOWN_SECRET = "planted-known-credential-value"
+TEST_DEPLOYMENT_LIMIT = 1_000_000_000_000  # micro-USD: scripted models cost nothing real
 # MinIO no longer publishes images to Docker Hub; Chainguard builds it from source. Pinned by digest.
 MINIO_IMAGE = "cgr.dev/chainguard/minio@sha256:2136d593beacf4461187035eca949fe49abd589d5079735025c711ca58fee0c8"
 POSTGRES_IMAGE = "postgres:17-alpine"
@@ -52,6 +54,12 @@ def infra() -> Iterator[Infra]:
         upgrade(admin_url)
         create_application_role(admin_url, APP_ROLE, APP_PASSWORD, bypass_rls=True)
         create_application_role(admin_url, API_ROLE, API_PASSWORD)
+        with psycopg.connect(admin_url.replace("postgresql+psycopg://", "postgresql://")) as admin:
+            admin.execute(  # the default deployment's budget; without one every call is refused
+                "INSERT INTO budget_limit (scope_kind, scope_id, limit_microusd) "
+                "VALUES ('deployment', 'local', %s)",
+                (TEST_DEPLOYMENT_LIMIT,),
+            )
         host, port, db = pg.get_container_host_ip(), pg.get_exposed_port(5432), pg.dbname
         config = minio.get_config()
         endpoint = f"http://{config['endpoint']}"

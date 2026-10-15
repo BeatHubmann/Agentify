@@ -10,7 +10,7 @@ from agentify.harness import execute, runs
 from agentify.harness.prompts import compose_prompt
 from agentify.registry import Registry
 from agentify.store.workspace import Workspace
-from tests.support.scripted import Script, Step
+from tests.support.scripted import Script, ScriptedSource, Step
 
 INPUT_PATH = "inputs/process.md"
 INPUT_TEXT = (
@@ -103,7 +103,7 @@ async def run_kind(
         claimed,
         kind,
         agent=build_agent(kind, registry),
-        model=script.model(),
+        source=ScriptedSource(script),
         prompt=prompt,
         registry=registry,
         config=config,

@@ -12,6 +12,7 @@ outputs:
     artifact_type: specification
     initial: {sections: []}
 budgets:
+  money_usd: "2.00"  # per-run ceiling (OPS-4); development cap OD-26
   request_limit: 40
   errors_per_tool: 5
   errors_per_class: 8

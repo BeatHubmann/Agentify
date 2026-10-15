@@ -7,6 +7,7 @@ shared registry, so every sink matches the values of every live context (A§17.2
 import base64
 import hashlib
 import hmac
+import json
 import re
 import threading
 import urllib.parse
@@ -63,7 +64,13 @@ class Scrubbed[T]:
 
 
 def _forms(value: bytes) -> tuple[bytes, ...]:
-    return value, base64.b64encode(value), urllib.parse.quote_from_bytes(value, safe="").encode()
+    """Every form a value takes in a sink: plain, base64, URL-encoded, and JSON-escaped (model
+    requests, run events and HTTP bodies are JSON, where a quote or backslash is escaped)."""
+    escaped = json.dumps(value.decode("utf-8", "surrogateescape"))[1:-1].encode(
+        "utf-8", "surrogateescape"
+    )
+    forms = (value, base64.b64encode(value), urllib.parse.quote_from_bytes(value, safe="").encode())
+    return forms if escaped == value else (*forms, escaped)
 
 
 class SecretGate:
@@ -119,6 +126,11 @@ class SecretGate:
         for rule, pattern in _PATTERNS.items():
             hits += [Hit(rule, self.fingerprint(m.group(0))) for m in pattern.finditer(data)]
         return list(dict.fromkeys(hits))
+
+    def known_hits(self, data: bytes) -> list[Hit]:
+        """Registered values only, in every encoding: what may never be sent to a model. Pattern
+        matches are left out, because client content is the model's input (A§18.2)."""
+        return [hit for hit in self._scan(data) if hit.rule == KNOWN_VALUE]
 
     def redact_text(self, text: str) -> Scrubbed[str]:
         """For logs, events, chat and HTTP bodies: matches are replaced, the rest kept (A§18.2)."""

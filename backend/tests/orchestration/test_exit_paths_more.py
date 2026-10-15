@@ -25,7 +25,7 @@ from tests.orchestration.test_run_exit_paths import (
     leftovers,
     run_once,
 )
-from tests.support.scripted import Script, Step, golden_calls
+from tests.support.scripted import Script, ScriptedSource, Step, golden_calls
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 KIND = "current-state-modeler"
@@ -125,7 +125,12 @@ async def test_cancel_before_claim_ends_rolled_back_without_any_model_call(
     assert claimed is not None
     script = Script(golden_calls())
     final = await execute.execute(
-        workspace, claimed, kind, agent=build_modeler("m"), model=script.model(), prompt="go"
+        workspace,
+        claimed,
+        kind,
+        agent=build_modeler("m"),
+        source=ScriptedSource(script),
+        prompt="go",
     )
     assert (
         final,
@@ -168,7 +173,7 @@ async def test_runtime_cancellation_during_a_tool_call_rolls_back(
             claimed,
             kind,
             agent=build_modeler("m"),
-            model=Script(golden_calls()).model(),
+            source=ScriptedSource(Script(golden_calls())),
             prompt="go",
         )
     )

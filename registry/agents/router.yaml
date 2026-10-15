@@ -7,6 +7,7 @@ phase: intake
 modes: [incremental]
 inbox_categories: [spec-clarification, design, confirmation]
 budgets:
+  money_usd: "2.00"  # per-run ceiling (OPS-4); development cap OD-26
   request_limit: 30
   errors_per_tool: 5
   errors_per_class: 8

@@ -24,7 +24,7 @@ from agentify.store.blobs import BlobStore
 from agentify.store.db import Database
 from agentify.store.workspace import Workspace
 from tests.support.gates import make_gate
-from tests.support.scripted import Script, Step, golden_calls
+from tests.support.scripted import Script, ScriptedSource, Step, golden_calls
 
 
 class HangInsideCommit(Workspace):
@@ -76,7 +76,7 @@ async def _as_worker(ws: Workspace, registry_root: str) -> None:
     await run_worker(
         ws,
         load_registry(Path(registry_root)),
-        lambda _kind: _script("mid_run").model(),
+        lambda _kind: ScriptedSource(_script("mid_run")),
         config,
         stop,
     )
@@ -114,7 +114,7 @@ async def main(argv: list[str]) -> None:
         claimed,
         kind,
         agent=build_modeler("m"),
-        model=_script(where).model(),
+        source=ScriptedSource(_script(where)),
         prompt="go",
         config=execute.HarnessConfig(lease_seconds=2, renew_every=0.5),
     )

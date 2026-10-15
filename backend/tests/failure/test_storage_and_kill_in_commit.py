@@ -17,7 +17,7 @@ from agentify.store.workspace import Workspace
 from tests.conftest import REGISTRY_ROOT, Infra
 from tests.failure.test_kill_and_stall import BACKEND
 from tests.orchestration.test_run_exit_paths import history, leftovers
-from tests.support.scripted import Script, golden_calls
+from tests.support.scripted import Script, ScriptedSource, golden_calls
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 KIND = "current-state-modeler"
@@ -113,7 +113,7 @@ async def test_database_outage_while_finishing_is_finished_by_the_sweeper(
             claimed,
             kind,
             agent=build_modeler("m"),
-            model=Script(golden_calls()).model(),
+            source=ScriptedSource(Script(golden_calls())),
             prompt="go",
             config=execute.HarnessConfig(lease_seconds=3, renew_every=1, storage_timeout=3),
         )

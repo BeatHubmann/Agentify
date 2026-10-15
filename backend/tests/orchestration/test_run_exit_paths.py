@@ -16,7 +16,7 @@ from agentify.harness import execute, runs
 from agentify.registry import AgentKind, Registry
 from agentify.store.workspace import Workspace
 from tests.support.flows import minimal_golden
-from tests.support.scripted import Script, Step, golden_calls
+from tests.support.scripted import Script, ScriptedSource, Step, golden_calls
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 FLOW_PATH = "flows/current/flow.json"
@@ -57,7 +57,7 @@ async def run_once(
         claimed,
         kind,
         agent=agent,
-        model=script.model(),
+        source=ScriptedSource(script),
         prompt="Model the process.",
         credentials=credentials,
     )
@@ -213,7 +213,12 @@ async def test_user_cancel_between_steps_rolls_back_without_a_revision(
     )
     assert claimed is not None
     final = await execute.execute(
-        workspace, claimed, kind, agent=build_modeler("m"), model=script.model(), prompt="go"
+        workspace,
+        claimed,
+        kind,
+        agent=build_modeler("m"),
+        source=ScriptedSource(script),
+        prompt="go",
     )
     state = await runs.run_state(workspace, holder["run_id"])
     assert (
@@ -271,7 +276,7 @@ async def test_runtime_cancellation_rolls_back_and_reraises(
             claimed,
             kind,
             agent=build_modeler("m"),
-            model=Script(steps).model(),
+            source=ScriptedSource(Script(steps)),
             prompt="go",
         )
     )

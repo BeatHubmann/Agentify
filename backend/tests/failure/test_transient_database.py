@@ -13,7 +13,7 @@ from tests.conftest import Infra
 from tests.orchestration.test_run_exit_paths import history
 from tests.support.agents import run_kind
 from tests.support.faults import FlakyDatabase
-from tests.support.scripted import Script, Step, golden_calls
+from tests.support.scripted import Script, ScriptedSource, Step, golden_calls
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
@@ -74,7 +74,7 @@ async def test_the_worker_loop_survives_a_database_error_and_runs_the_next_job(
     db.fail(1, skip=skip)
 
     def model_for(_kind: AgentKind) -> object:
-        return Script(golden_calls()).model()
+        return ScriptedSource(Script(golden_calls()))
 
     stop = asyncio.Event()
     config = WorkerConfig(
