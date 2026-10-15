@@ -1,6 +1,6 @@
 # Agentify: verification ledger
 
-> **Status:** accepted with `ARCHITECTURE.md` at gate G2 on 2026-10-14 (PR #1). Evidence records E-1 to E-14 cover slices 1 to 2e (checkpoint `1c4ffa4`, 2026-10-15), E-15 and E-16 the step-2 close-out, E-17 and E-18 slice 3.1, and E-19 and E-20 the run-completion fix (external review R2) and a stream-scope defect CI found. A row without evidence stays *proposed* or *deferred*.
+> **Status:** accepted with `ARCHITECTURE.md` at gate G2 on 2026-10-14 (PR #1). Evidence records E-1 to E-14 cover slices 1 to 2e (checkpoint `1c4ffa4`, 2026-10-15), E-15 and E-16 the step-2 close-out, E-17 and E-18 slice 3.1, and E-19 to E-21 the run-completion fix (external review R2) and a stream-scope defect CI found. A row without evidence stays *proposed* or *deferred*.
 > **Authority:** `genesis/PRODUCTION-BRIEF.md` (cited as "§n") is the specification; `ARCHITECTURE.md` (cited as "A§n") is the design. This file maps each requirement to the evidence that will prove it. It adds no requirements.
 > **Date:** 2026-10-14.
 
@@ -272,6 +272,15 @@ These are the suites of A§26.2: `unit`, `property`, `analytic`, `orchestration`
 | Defect | CI run 38810154323 on `b02d18e` failed `test_a_user_edit_made_before_a_disconnect_survives_the_rollback` with "Token ... was created in a different Context" (1 of 318; it passed six times locally). Root cause: the chat relay held the engagement scope across its `yield`s. A client that leaves while the relay waits at a `yield` leaves the generator to the event loop, which closes it in another task, where resetting the scope fails. Reproduced deterministically by dropping the relay after its first chunk; the cause predates this branch. The relay now opens the scope around each storage call only |
 | Negative control | The scope held across the first `yield` again: test_a_stream_dropped_at_a_yield_is_closed_without_a_scope_error fails with that error |
 | Log location | Local run; CI evidence follows on the pull request |
+
+### E-21: run completion and stream scope fixes in CI, 2026-10-15 23:45 CEST (21:45 UTC)
+
+| Field | Value |
+|---|---|
+| Revision | `e6d7dd8` (PR #18 head; code identical to E-20's `1b6f974`, plus the ledger) |
+| Command | GitHub Actions workflow `ci`, run 38811256330 |
+| Results | backend checks pass (**319 passed**, 1 deselected, in 122.6 s); aislop, secret scan and spell check pass |
+| Log location | https://github.com/BeatHubmann/Agentify/actions/runs/38811256330 |
 
 ## Step 2 close-out (OD-22), 2026-10-15
 
