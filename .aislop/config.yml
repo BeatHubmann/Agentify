@@ -4,5 +4,6 @@ telemetry:
 exclude:
   - tools/aislop/node_modules
   - spikes
+  - .claude/skills  # vendored at pinned commits, kept verbatim (.claude/skills/SOURCES.md)
 ci:
   failBelow: 95  # ratchet: two points under the score when aislop was adopted (97, 2026-10-14)
