@@ -34,7 +34,7 @@ This ledger maps each requirement (invariant, hazard, behavior contract, definit
 
 ## Release scope
 
-- **Release 1 (OD-12):** the foundation (§12.4 steps 1–4), node profile and governance (step 5), and acceptance contracts and conformance (step 6). These rows are *proposed*.
+- **Release 1 (OD-12):** the foundation (§12.4 steps 1–4), node profile and governance (step 5), and acceptance contracts and conformance (step 6). These rows start as *proposed*; each row's current status is in its last column.
 - **Release 2:** simulation and business case (step 7). These rows are *deferred (release 2)*. The profile fields they read are collected in release 1 (OD-16).
 - **Not scheduled:** regulatory mapping (step 8), until the operator answers §13.2.4. These rows are *deferred (OD-12)*.
 - **Not in any release yet:** the optional capabilities (OD-15), the frontend (OD-11, D-9).
