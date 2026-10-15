@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import anyio
-import pydantic_core
+from pydantic import TypeAdapter
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
@@ -22,6 +22,7 @@ from agentify.secretgate import SecretGate
 from agentify.store import budget, security_events
 from agentify.store.db import Database
 
+_JSON: TypeAdapter[Any] = TypeAdapter(Any)
 # Tokens a request may need beyond its serialized size (message framing, tool-schema rendering).
 _FRAMING_TOKENS = 1024
 
@@ -43,7 +44,7 @@ class CallContext:
 
 def request_bytes(messages: list[ModelMessage], params: ModelRequestParameters) -> bytes:
     """What the request carries: the conversation and the tool definitions."""
-    return pydantic_core.to_json([messages, params], fallback=str)
+    return _JSON.dump_json([messages, params], fallback=str)
 
 
 def worst_case_microusd(spec: ModelSpec, request_size: int) -> int:
