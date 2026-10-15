@@ -66,13 +66,19 @@ Recorded 2026-10-14 (gate G1). They are binding inputs; changing one is an opera
 | OD-19 | Repository | Public, with branch protection, secret scanning and push protection. **No client-derived material in the repository**, anonymized or not; the real corpus lives in a private EU store |
 | OD-20 | Review | Draft PR on `design/architecture`; fresh-context invariant review before operator review |
 | OD-21 | Database (2026-10-14, after G2) | **AWS RDS for PostgreSQL in `eu-central-1`** by default. Fly Managed Postgres only if Fly confirms in writing that its backups stay in the EU, decided before deployment (A§28 O-1) |
+| OD-22 | Slicing (2026-10-15, post-slice-2 checkpoint) | A step is an A§27 block with an exit criterion; a slice is one PR numbered `<step>.<n>`, about ten ledger rows at most. A step closes at a checkpoint: a close-out record (rows verified, carried with a target step, blocked with the blocker), a `ponytail-audit` and an operator decision. Slices 2a to 2e keep their names. Step 2 ends with one close-out PR for the checkpoint audit's findings |
+| OD-23 | Step 3 (2026-10-15) | An evaluation checkpoint before steps 4 and 5: 3.1 model provider, 3.2 eval harness, 3.3 current-state capture evaluation, then a continue, revise or defer decision by the operator (A§27) |
+| OD-24 | Rule pack revision (2026-10-15) | Draft `agentify-core@1.1.0` in the step-2 close-out PR: blocking-rule applicability follows consequence fields for every node kind, not the archetype. `1.0.0` stays approved until the operator approves the draft, before step 4 |
+| OD-25 | Outcome reporting (2026-10-15) | Evaluations report containment (SC-1, wording unchanged), task completion and semantic quality separately. Thresholds are proposed in 3.2 and approved before any candidate is scored |
+| OD-26 | Model access for development (2026-10-15) | A local AWS SSO profile with Bedrock invoke-only rights in `eu-central-1`; no keys in the repository or in CI, where models stay scripted. A hard spend cap, set when 3.1 starts, enforced by `LedgerModel` |
+| OD-27 | Rule pack `agentify-core@1.1.0` (2026-10-15) | Approved as drafted in A§12.4.1. It replaces `1.0.0` for the oversight and escalation rules; the autonomy ceilings, the other two blocking rules and the advisory rules are unchanged |
 
 ### 1.1 G2 approvals (2026-10-14)
 
 The operator merged PR #1 on 2026-10-14 at 20:29 CEST (18:29 UTC) and confirmed that the merge approves, as proposed:
 
 - the design in this document;
-- the initial rule pack `agentify-core@1.0.0`: its four blocking rules and the autonomy ceilings (A§12.4);
+- the initial rule pack `agentify-core@1.0.0`: its four blocking rules and the autonomy ceilings (A§12.4; succeeded by `1.1.0`, OD-27);
 - deviations D-1 to D-15 (A§25);
 - the starting values: error budgets 5 per tool, 8 per error class, 20 per run (A§10.3); incremental shrink bound 30% (A§8.6); disconnect grace period 15 s (A§8.5); from-scratch confirmation window 15 minutes (A§8.2). Starting values are tunable from measured retry and eval statistics; each change is recorded with its evidence.
 
@@ -999,15 +1005,15 @@ Rules are YAML in the registry, validated against a schema. The format is a smal
 
 ```yaml
 id: oversight.natural-persons-checkpoint
-version: 1
+version: 2
 severity: blocking
 rationale: >
   Decisions about natural persons with irreversible or external effects are where liability
-  concentrates (actor archetype). A human checkpoint must be able to stop the effect.
-remediation: Insert a HUMAN approval step between the actor and the effect, or make the effect reversible.
+  concentrates, whichever kind of node makes them. A human checkpoint must be able to stop the effect.
+remediation: Insert a HUMAN approval step between the deciding node and the effect, or make the effect reversible.
 check:
   every_path:
-    from: {all: [{kind: ACTOR}, {profile: decides_about_natural_persons, is: true}]}
+    from: {profile: decides_about_natural_persons, is: true}
     to:   {any: [{profile: effect_reversibility, is: IRREVERSIBLE}, {profile: external_effect, is: true}]}
     passes: {all: [{execution: HUMAN}, {role: CHECKPOINT}]}
 on_missing: finding
@@ -1047,7 +1053,7 @@ Mechanizable catalog obligations (deferred capability) compile into rules of thi
 
 Five levels: coarse enough for consistent estimates (each level differs in *who acts* and *when a human sees the case*), fine enough for meaningful ceilings. **Decision class** is derived from the profile: `(decides_about_natural_persons, effect_reversibility, external_effect)`. The rule pack carries a ceiling table per decision class.
 
-### 12.4 Initial rule pack `agentify-core@1.0.0` (approved by the operator 2026-10-14, A§1.1)
+### 12.4 Initial rule pack `agentify-core@1.0.0` (approved by the operator 2026-10-14, A§1.1; succeeded by `1.1.0`, A§12.4.1)
 
 **Blocking (four, each justified).** Reachability and termination are no longer a governance rule: they are part of validity (A§6.1 level 3), so a flow with unreachable or dead-end steps cannot commit at all.
 
@@ -1064,7 +1070,7 @@ Proposed ceilings: natural persons + irreversible → A2; natural persons + reve
 
 **Waiver-rate review:** `rule_waiver_stats` counts findings and waivers per rule and pack version. A rule waived on more than half of the flows it fires on, over a trailing window of at least 10 flows, is flagged in the operator view for review (§6.9, HZ-26). The threshold is configuration.
 
-#### 12.4.1 Draft `agentify-core@1.1.0` (OD-24; awaiting operator approval, `1.0.0` stays in force)
+#### 12.4.1 Rule pack `agentify-core@1.1.0` (drafted under OD-24, approved by the operator 2026-10-15, OD-27)
 
 The external post-slice-2 review (F1) showed that `1.0.0` takes governance applicability from the archetype: the oversight rule selects `kind: ACTOR` and the escalation rule exempts orchestrators. A task that classifies people, an orchestrator that routes a case to an external party, or a deterministic step that sends a decision out escapes both rules, and relabelling a node's kind removes a control while its effects stay unchanged. The brief says governance review *focuses* on actors (§4.1); it does not exempt the other kinds. The draft keys applicability on the consequence fields every node's profile already carries (A§6.3), so the archetype describes a node's responsibility and never decides whether a control applies.
 
@@ -1076,7 +1082,7 @@ The external post-slice-2 review (F1) showed that `1.0.0` takes governance appli
 
 The draft only adds scope; no node that `1.0.0` covers leaves any rule. Missing data still fails closed and estimates still cannot exempt (A§12.2), so an orchestrator leaves the escalation rule's scope only on values a person stated or measured. Scoping the escalation rule for tasks and actors by consequence too (so a low-consequence AI task needs no escalation target) would remove a control that `1.0.0` approves; it is left as a separate option for step 4, to be decided on evaluation evidence. Only orchestrators with a consequence join the rule, so the waiver-fatigue concern of BC-E.7 (HZ-26) still holds: a mechanical routing node with stated values is out of scope and raises nothing. Open for step 4: the number of human statements this needs per flow, measured in the evaluation, and whether one answer may state a value for several nodes at once.
 
-Acceptance checks (ledger BC-E.11, proposed): a task whose classification drives a consequential action is assessed on that consequence with no actor in the flow; an orchestrator with consequential routing or data disclosure is assessed on those properties; a mechanical routing node with stated values raises nothing; relabelling a node's kind, with its profile unchanged, never changes its blocking findings; a missing or estimated value never removes a control.
+Acceptance checks (ledger BC-E.11): a task whose classification drives a consequential action is assessed on that consequence with no actor in the flow; an orchestrator with consequential routing or data disclosure is assessed on those properties; a mechanical routing node with stated values raises nothing; relabelling a node's kind, with its profile unchanged, never changes its blocking findings; a missing or estimated value never removes a control.
 
 ### 12.5 Governance in redesign runs
 
@@ -1566,13 +1572,13 @@ GitHub Actions as thin orchestration over the same commands developers run (`uv 
 Follows §12.4 with the release-1 scope of OD-12:
 
 1. **Slice 1, walking skeleton of the reliability contract (built 2026-10-14; evidence VERIFICATION E-1):** flow schema, normalization, integrity validation and invariants (with property tests); edit layer and merge (§12.5A property suite); Postgres + MinIO store with run staging, commit, rollback and verification; admission and run state machine; harness gate; one `current-state-modeler` run driven by a scripted model through the real framework; the synthetic minimal golden case. **Done when**, in `VERIFICATION.md`, the `INV-1` and `INV-7` rows for the exit paths S, ME, VF, UC, RC, PK and SF, the `INV-6` concurrent-admission row and the `INV-10` tolerance rows for the authored flow and the edit layer are verified, and every other row is visibly pending.
-2. Remaining §12.5B orchestration cases and §12.5C failure rows for invariants 1–10; router, skills, parallel spec sections; chat stream path.
-3. Eval harness MVP for flow authoring (§12.5D) with the synthetic corpus; real corpus once supplied.
+2. Remaining §12.5B orchestration cases and §12.5C failure rows for invariants 1–10; router, skills, parallel spec sections; chat stream path. Built as slices 2a to 2e (E-3 to E-14), then a close-out PR for the post-slice-2 checkpoint audit (OD-22). Rows carried: BC-B.M3, INV-7.GC, the INV-1 soak and INV-6 across every entry point to step 6; BC-B.M4 to 3.1; rows that need the redesigner, profiler or governance engine to step 4.
+3. Evaluation checkpoint (OD-23): **3.1** Claude on Bedrock EU through the per-role model policy seam, `LedgerModel` with a hard spend cap, worker concurrency; **3.2** eval harness MVP for flow authoring (§12.5D) reporting containment, task completion and semantic quality separately (OD-25); **3.3** current-state capture evaluation on new synthetic cases and the operator's real cases, with repeated trials, a single-agent baseline and human review. Ends with a continue, revise or defer recommendation for the operator.
 4. Node profile, profiler, Markov sensitivity and governance engine with readiness (§12.5E).
 5. Acceptance contracts, dataflow typing, sandbox gateway and sandbox organization, Claude Code executor, conformance (§12.5F).
 6. Deployment hardening: Fly apps, OIDC federation, private networking, drills, canary.
 
-Each slice is its own branch and PR under governed development, with its task contract, proof plan and evidence.
+Each slice is its own branch and PR under governed development, numbered `<step>.<n>` (OD-22), with its task contract, proof plan, evidence and the "Skills used" record (AGENTS.md).
 
 ---
 
