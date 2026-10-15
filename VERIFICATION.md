@@ -1,6 +1,6 @@
 # Agentify: verification ledger
 
-> **Status:** accepted with `ARCHITECTURE.md` at gate G2 on 2026-10-14 (PR #1). Evidence records E-1 to E-14 cover slices 1 to 2e (checkpoint `1c4ffa4`, 2026-10-15), E-15 and E-16 the step-2 close-out, and E-17 slice 3.1. A row without evidence stays *proposed* or *deferred*.
+> **Status:** accepted with `ARCHITECTURE.md` at gate G2 on 2026-10-14 (PR #1). Evidence records E-1 to E-14 cover slices 1 to 2e (checkpoint `1c4ffa4`, 2026-10-15), E-15 and E-16 the step-2 close-out, and E-17 and E-18 slice 3.1. A row without evidence stays *proposed* or *deferred*.
 > **Authority:** `genesis/PRODUCTION-BRIEF.md` (cited as "§n") is the specification; `ARCHITECTURE.md` (cited as "A§n") is the design. This file maps each requirement to the evidence that will prove it. It adds no requirements.
 > **Date:** 2026-10-14.
 
@@ -239,6 +239,15 @@ These are the suites of A§26.2: `unit`, `property`, `analytic`, `orchestration`
 | Live check (`tests/live/test_bedrock_live.py`) | **Blocked.** The development AWS project cannot enable Claude: every `eu.anthropic.claude-*-5-5` profile reports the model agreement as not available, and a call returns HTTP 403 before inference (eu-central-1 and eu-north-1). Under OD-29 the plumbing model GLM 4.7 Flash (`eu-central-1`, on demand) was tried and refused with `ThrottlingException: Too many tokens per day`. Three attempts, none reached inference; USD 0 billed against the OD-26 cap of USD 25. OP-13 and INV-8.MODEL stay *implemented* until the check runs |
 | Defects found during the slice | The secret gate did not find a registered value whose JSON form escapes a quote or backslash, so a model request (JSON) could carry it (`6282a50`). aislop flagged the undeclared `pydantic_core` import (`69007b0`) |
 | Log location | Local run; CI evidence follows on the pull request |
+
+### E-18: slice 3.1 in CI, 2026-10-15 23:07 CEST (21:07 UTC)
+
+| Field | Value |
+|---|---|
+| Revision | `67b4591` (PR #17 head; code identical to E-17's `69007b0`, plus the ledger) |
+| Command | GitHub Actions workflow `ci`, run 38807104546 |
+| Results | backend checks pass (**314 passed**, 1 deselected, in 103.0 s); aislop, secret scan and spell check pass. CodeQL (actions, python) passed |
+| Log location | https://github.com/BeatHubmann/Agentify/actions/runs/38807104546 |
 
 ## Step 2 close-out (OD-22), 2026-10-15
 
