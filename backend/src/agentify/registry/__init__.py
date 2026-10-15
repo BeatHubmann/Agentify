@@ -5,6 +5,7 @@ graph tools; artifact-authoring kinds write registry artifact types through JSON
 writes nothing and dispatches.
 """
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -29,6 +30,8 @@ class GateDecl(_Decl):
 
 
 class BudgetDecl(_Decl):
+    money_usd: Decimal = Field(gt=0)
+    """The run's cost ceiling in USD, enforced by the ledger before every model call (OPS-4)."""
     request_limit: int = Field(ge=1)
     errors_per_tool: int = Field(ge=1)
     errors_per_class: int = Field(ge=1)

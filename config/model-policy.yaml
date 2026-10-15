@@ -1,0 +1,23 @@
+# Per-role model policy (A§17.4). Every role starts on the same model; the first evaluation run
+# (slice 3.3, OD-23) chooses, and a role changes model only when the eval harness shows no regression.
+region: eu-central-1
+prices:
+  source: >-
+    AWS Pricing API, service AmazonBedrockFoundationModels, region eu-central-1, on-demand
+    "Standard" rates (geographic EU inference profile), retrieved 2026-10-15
+  unit: USD per million tokens
+models:
+  eu.anthropic.claude-opus-5-5:
+    prices: {input: "4.40", output: "22.00", cache_read: "0.22", cache_write: "5.50"}
+    max_output_tokens: 32000
+  eu.anthropic.claude-sonnet-5-5:
+    prices: {input: "2.20", output: "11.00", cache_read: "0.11", cache_write: "2.75"}
+    max_output_tokens: 32000
+  eu.anthropic.claude-haiku-5-5:
+    prices: {input: "0.11", output: "0.55", cache_read: "0.011", cache_write: "0.1375"}
+    max_output_tokens: 32000
+roles:
+  router: eu.anthropic.claude-opus-5-5
+  spec-section: eu.anthropic.claude-opus-5-5
+  synthesis: eu.anthropic.claude-opus-5-5
+  current-state-modeler: eu.anthropic.claude-opus-5-5
