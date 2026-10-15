@@ -15,6 +15,7 @@ from pydantic_ai.models import Model
 from agentify.agents.catalog import build_agent
 from agentify.harness import execute, prompt_version, runs, sweeper
 from agentify.harness.prompts import compose_prompt
+from agentify.observability import logger
 from agentify.registry import AgentKind, Registry
 from agentify.store.db import check_log_settings
 from agentify.store.workspace import Workspace
@@ -82,14 +83,17 @@ async def run_worker(
     await check_log_settings(ws.db)
     next_sweep = 0.0
     while not stop.is_set():
-        if time.monotonic() >= next_sweep:
-            await sweeper.sweep(
-                ws,
-                owner=config.owner,
-                lease_seconds=config.harness.lease_seconds,
-                admission_timeout_seconds=config.admission_timeout,
-            )
-            next_sweep = time.monotonic() + config.sweep_interval
+        try:
+            if time.monotonic() >= next_sweep:
+                await sweeper.sweep(
+                    ws,
+                    owner=config.owner,
+                    lease_seconds=config.harness.lease_seconds,
+                    admission_timeout_seconds=config.admission_timeout,
+                )
+                next_sweep = time.monotonic() + config.sweep_interval
+        except Exception as exc:  # noqa: BLE001 - a transient error never stops the worker
+            logger().warning("worker_sweep_failed", owner=config.owner, error=type(exc).__name__)
         work = asyncio.create_task(_work_once(ws, registry, model_for, config))
         stopping = asyncio.create_task(stop.wait())
         done, _ = await asyncio.wait({work, stopping}, return_when=asyncio.FIRST_COMPLETED)
@@ -101,6 +105,13 @@ async def run_worker(
         stopping.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await stopping
-        if not work.result():
+        try:
+            found_work = work.result()
+        except Exception as exc:  # noqa: BLE001 - a claimed run left behind is the sweeper's (A§8.5)
+            logger().warning(
+                "worker_iteration_failed", owner=config.owner, error=type(exc).__name__
+            )
+            found_work = False
+        if not found_work:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=config.poll_interval)

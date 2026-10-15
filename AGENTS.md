@@ -20,7 +20,7 @@ Skills are used wherever one applies, not when convenient. The uses below are re
 | Before a PR is opened for review | `ponytail-review` on the branch diff | Its findings and how each was handled |
 | Handling review findings (operator, reviewer, `ponytail-review`, CI) | `superpowers:receiving-code-review` | Each finding fixed, or rejected with evidence |
 | Before calling work done, verified or ready to merge | `superpowers:verification-before-completion` | The commands and the output behind the claim |
-| Writing a PR description, a commit body, or prose in `ARCHITECTURE.md`, `VERIFICATION.md`, `README.md` or `AGENTS.md` | `humanizer`, embedded mode | The final text |
+| Before publishing a PR description or any documentation edit (`README.md`, `AGENTS.md`, `ARCHITECTURE.md`, `VERIFICATION.md`, `.claude/skills/SOURCES.md` or any other document), and for commit bodies | `humanizer`, as an explicit pass over the final text | The "Skills used" row names each text that was passed and what the pass changed, or "no change". Chat replies are exempt |
 | At each step checkpoint | `ponytail-audit`, in a fresh context | The ranked report, with a disposition per finding in the checkpoint record |
 | UI, design-system or frontend work (after OD-11) | `ui-ux-pro-max` | The guidance used, cited; it recommends, it does not decide |
 

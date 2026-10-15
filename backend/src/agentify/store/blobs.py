@@ -43,6 +43,16 @@ async def _with_retries[T](call: Callable[[], T]) -> T:
         attempt += 1
 
 
+async def _read[T](call: Callable[[], T], sha: str) -> T:
+    """A retried read; transient errors that outlast the retries become `BlobUnavailable`."""
+    try:
+        return await _with_retries(call)
+    except (ClientError, BotoConnectionError, HTTPClientError) as exc:
+        if _transient(exc):
+            raise BlobUnavailable(f"blob {sha} unreadable after {ATTEMPTS} attempts") from exc
+        raise
+
+
 def _error_code(exc: ClientError) -> str | None:
     """The S3 error code of a client error, or None when the response carries none."""
     error = exc.response.get("Error")
@@ -91,17 +101,14 @@ class BlobStore:
             ]
             return body.read()
 
-        try:
-            data = await _with_retries(_get)
-        except (ClientError, BotoConnectionError, HTTPClientError) as exc:
-            if _transient(exc):
-                raise BlobUnavailable(f"blob {sha} unreadable after {ATTEMPTS} attempts") from exc
-            raise
+        data = await _read(_get, sha)
         if sha256_hex(data) != sha:
             raise ValueError(f"blob {sha} failed its content check")
         return data
 
     async def exists(self, engagement_id: str, sha: str) -> bool:
+        """Whether the blob is stored; transient errors are retried like a read (A§10.2)."""
+
         def _head() -> bool:
             try:
                 self._client.head_object(Bucket=self._bucket, Key=self.key(engagement_id, sha))
@@ -111,4 +118,4 @@ class BlobStore:
                 raise
             return True
 
-        return await anyio.to_thread.run_sync(_head)
+        return await _read(_head, sha)
