@@ -7,7 +7,8 @@ and verifies. A lost lease means another process owns the run: this executor sto
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+import traceback
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -187,6 +188,13 @@ async def _drive_agent(
 
 
 CHAT_ENTRY_POINTS = frozenset({"chat", "router_followup"})
+MAX_TRACEBACK_CHARS = 4000
+
+
+def _traceback_detail(exc: BaseException) -> str:
+    """The exception type, then its traceback: the run record keeps it, scrubbed (A§10.2)."""
+    trace = "".join(traceback.format_exception(exc))
+    return f"{type(exc).__name__}\n{trace[-MAX_TRACEBACK_CHARS:]}"
 
 
 async def _stop_reason(ws: Workspace, claimed: runs.ClaimedRun, grace: float) -> str | None:
@@ -374,45 +382,49 @@ async def execute(
     output_language: str = "en",
     config: HarnessConfig | None = None,
     registry: Registry | None = None,
+    credentials: Sequence[str] = (),
 ) -> str:
+    """Run one claimed run to a final state. `credentials` are its per-request credentials (A§17.2):
+    known values in every sink, other runs' included, until the run, its `finish` too, is over."""
     config = config or HarnessConfig()
-    lost = asyncio.Event()
-    outcome: Outcome
-    try:
-        async with _lease_keeper(ws, claimed.fence, config, lost):
-            outcome = await _loop(
-                ws,
-                claimed,
-                kind,
-                agent=agent,
-                model=model,
-                prompt=prompt,
-                output_language=output_language,
-                lost=lost,
-                registry=registry,
-                grace=config.attachment_grace_seconds,
-            )
-    except asyncio.CancelledError:
+    with ws.gate.registered(credentials):
+        lost = asyncio.Event()
+        outcome: Outcome
+        try:
+            async with _lease_keeper(ws, claimed.fence, config, lost):
+                outcome = await _loop(
+                    ws,
+                    claimed,
+                    kind,
+                    agent=agent,
+                    model=model,
+                    prompt=prompt,
+                    output_language=output_language,
+                    lost=lost,
+                    registry=registry,
+                    grace=config.attachment_grace_seconds,
+                )
+        except asyncio.CancelledError:
+            with anyio.CancelScope(shield=True):
+                await finish(
+                    ws,
+                    claimed,
+                    kind,
+                    Outcome("cancelled", "runtime cancellation"),
+                    config=config,
+                    registry=registry,
+                )
+            raise
+        except RunAbort as exc:
+            outcome = Outcome("aborted", f"{exc.reason}: {exc.detail}")
+        except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
+            outcome = Outcome("aborted", type(exc).__name__)
+        except LeaseLost:
+            outcome = Outcome("lease_lost")
+        except SecretFound as exc:
+            outcome = Outcome("aborted", f"secret_gate: {exc.rule} at {exc.where}")
+        except Exception as exc:  # noqa: BLE001 - any failure, including provider errors, ends in rollback
+            outcome = Outcome("aborted", _traceback_detail(exc))
         with anyio.CancelScope(shield=True):
-            await finish(
-                ws,
-                claimed,
-                kind,
-                Outcome("cancelled", "runtime cancellation"),
-                config=config,
-                registry=registry,
-            )
-        raise
-    except RunAbort as exc:
-        outcome = Outcome("aborted", f"{exc.reason}: {exc.detail}")
-    except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
-        outcome = Outcome("aborted", type(exc).__name__)
-    except LeaseLost:
-        outcome = Outcome("lease_lost")
-    except SecretFound as exc:
-        outcome = Outcome("aborted", f"secret_gate: {exc.rule} at {exc.where}")
-    except Exception as exc:  # noqa: BLE001 - any failure, including provider errors, ends in rollback
-        outcome = Outcome("aborted", type(exc).__name__)
-    with anyio.CancelScope(shield=True):
-        final = await finish(ws, claimed, kind, outcome, config=config, registry=registry)
+            final = await finish(ws, claimed, kind, outcome, config=config, registry=registry)
     return final

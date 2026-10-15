@@ -16,6 +16,7 @@ from agentify.agents.catalog import build_agent
 from agentify.harness import execute, prompt_version, runs, sweeper
 from agentify.harness.prompts import compose_prompt
 from agentify.registry import AgentKind, Registry
+from agentify.store.db import check_log_settings
 from agentify.store.workspace import Workspace
 
 ModelFactory = Callable[[AgentKind], Model]
@@ -78,6 +79,7 @@ async def run_worker(
         config = replace(
             config, harness=replace(config.harness, prompt_version=prompt_version.default())
         )
+    await check_log_settings(ws.db)
     next_sweep = 0.0
     while not stop.is_set():
         if time.monotonic() >= next_sweep:

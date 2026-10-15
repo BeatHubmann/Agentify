@@ -12,6 +12,7 @@ from agentify.domain.envelope import Corrupt, decode_edit_layer, decode_flow
 from agentify.domain.flow import Flow
 from agentify.registry import AgentKind, ArtifactAgentKind, FlowAgentKind
 from agentify.secretgate import SecretFound
+from agentify.store import security_events
 from agentify.store.workspace import Conn, Fence, Workspace
 
 Mode = Literal["from_scratch", "incremental"]
@@ -369,9 +370,17 @@ async def latest_confirmation(ws: Workspace, *, process_id: str, run_kind: str) 
 async def record_result(ws: Workspace, fence: Fence, text: str) -> None:
     """Store a run's final text (router turns). Text that the secret gate refuses is withheld."""
     try:
-        ws.gate.check_bytes(text.encode("utf-8"), where="run result")
-    except SecretFound:
+        ws.gate.check_bytes(text.encode("utf-8"), where="run.result_text")
+    except SecretFound as exc:
         text = "[withheld: the secret gate refused this text]"
+        await security_events.record(
+            ws.db,
+            ws.gate,
+            exit="run_record",
+            hits=[exc.hit],
+            location="run.result_text",
+            run_id=fence.run_id,
+        )
     async with ws.db.tx() as conn:
         await conn.execute(
             "UPDATE run SET result_text_scrubbed = %s WHERE id = %s AND lease_owner = %s AND lease_epoch = %s",

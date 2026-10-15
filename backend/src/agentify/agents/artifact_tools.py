@@ -10,11 +10,11 @@ from typing import Any
 import jsonpatch
 from pydantic_ai import Agent, RunContext
 
-from agentify.agents.flow_tools import FRAMEWORK_RETRIES, correctable
+from agentify.agents.flow_tools import FRAMEWORK_RETRIES
 from agentify.agents.inbox_tools import register_inbox_tools
 from agentify.artifacts import CheckContext, parse_body, run_checks
 from agentify.domain.envelope import Corrupt, Envelope, encode
-from agentify.harness.ports import ArtifactLocks, InboxPort, StagingPort
+from agentify.harness.ports import ArtifactLocks, InboxPort, StagingPort, correctable
 from agentify.registry import ArtifactType, OutputDecl
 
 ARTIFACT_SCHEMA_VERSION = 1

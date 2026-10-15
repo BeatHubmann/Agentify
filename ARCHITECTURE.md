@@ -1255,6 +1255,17 @@ A hit in content destined for storage is **redacted with a marker** for logs, pr
 
 **Fix at the cause** (§8.12): a hit is treated as a defect to trace (why did the value reach that exit?), not just redacted. The leak drill tests (A§26) plant credentials at every exit in this table and assert both the block and the security event.
 
+
+### 18.3 Hits, fingerprints, security events and the allow-list
+
+- **Fingerprint:** the rule id plus `HMAC-SHA256(key, matched value)`. The key is the deployment secret `SECRET_GATE_FINGERPRINT_KEY`, which is itself registered with the gate as a known value. Without the key, a stored fingerprint cannot be used to confirm a guessed secret (change C-6).
+- **Security events:** `security_event(id, at, engagement_id, process_id, run_id, exit, rule, fingerprint, location)` is append-only and subject to row-level security by engagement; it never holds the value. Every exit with a database context writes a row on each hit: staged writes, blobs, inbox, chat, run events, run records and HTTP error bodies. A redaction in a log line adds a `security_event` field (exit, rule, fingerprint) to that same line instead, because the log processor does no I/O (change C-7).
+- **Repeated hits:** a staged agent write that the gate refuses is a correctable error the first time (A§10.2). A second refused agent write (staged write or inbox question) with the same fingerprint in the same run aborts it with `secret_gate_repeated`. The harness counts the run's refusal rows in `security_event`, so the count survives a worker restart; redactions of the same value elsewhere, such as in the run event of the tool call that carried it, are not refusals and do not count.
+- **Allow-list:** `secret_allowlist_entry(id, engagement_id, rule, fingerprint, action, justification, admin_id, at)` is append-only, with `action` either `allow` or `revoke`; the latest entry per engagement, rule and fingerprint decides. Only deployment admins add entries, each with a justification. A `known-value` fingerprint is refused. The gate consults the engagement's active entries in the checks that fail writes (staged writes, blobs, inbox); redacting exits keep redacting.
+- **Per-run known values:** `SecretGate.registered(values)` adds values to the gate's shared registry for the lifetime of a context, with a reference count. The gate keeps no per-task state, so every sink matches the values of every live context, including those of other concurrent runs.
+- **Database logs:** the server runs with `log_statement = none`, `log_parameter_max_length = 0`, `log_parameter_max_length_on_error = 0` and `log_error_verbosity = terse`. Terse is needed because a constraint violation's `DETAIL` line quotes the offending values. `store.db.check_log_settings` reads the four settings back at startup and refuses to start if any differs. The deployment sets them in the RDS parameter group (A§27 step 6).
+- **Fallbacks stay behind the gate:** `blobs.put` retries transient storage errors (three attempts, short backoff) with the same `Scrubbed[bytes]`, then raises (staging unavailable aborts the run, A§10.2). If a log line cannot be written to stdout, the logger writes the same rendered, scrubbed line to stderr, and drops it if that fails too.
+
 ---
 
 ## 19. Identity, authorization, tenancy, separation of duties
@@ -1471,6 +1482,8 @@ Changes made during governed development, each in the PR that implements it. A c
 | C-3 | 2b | Router follow-up turns are triggered by durable `router_continuation` notices consumed in the admission transaction (A§9.1) | A follow-up admitted directly by a finishing child would be refused while another router turn is active, losing the notice | Approved 2026-10-14 (PR #5) |
 | C-4 | 2c-1 | The worker's database role bypasses row-level security instead of setting a per-job engagement scope (A§19) | The sweeper and router follow-ups scan runs across engagements by design, and untrusted code runs in sandboxes, not in the worker. RLS stays the second wall for every API request. Scoping the worker per run remains possible later | Approved 2026-10-14 (PR #8) |
 | C-5 | 2c-2 | The gateway polls the run-event log (default every 0.2 s per attached stream) instead of listening on a Postgres notification channel (A§2) | Polling needs no long-lived listening connection per gateway and has no lost-notification path; the log is the source of truth either way. Latency is bounded by the poll interval. Moving to `LISTEN`/`NOTIFY` later changes only the relay's wait, not the protocol | Approved 2026-10-14 (PR #9) |
+| C-6 | 2d | Secret-gate fingerprints are keyed hashes (HMAC-SHA256 with a deployment key) instead of a plain hash of the matched value (A§10.2) | Fingerprints are stored in security events and allow-list entries; a plain hash of a low-entropy secret would let anyone reading them confirm a guess | Approved 2026-10-14 (slice 2d task contract) |
+| C-7 | 2d | A redaction in a log line is recorded in that line's `security_event` field, not as a `security_event` row (A§18.2) | The log processor runs synchronously on every log call; a database write from it would add I/O to logging and could recurse through the database driver's own logging | Approved 2026-10-14 (slice 2d task contract) |
 
 ---
 

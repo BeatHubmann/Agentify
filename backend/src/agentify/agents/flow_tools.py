@@ -15,7 +15,7 @@ from agentify.domain.edits import EditLayer, item_hash
 from agentify.domain.envelope import FLOW_SCHEMA_VERSION, Corrupt, decode_flow, encode
 from agentify.domain.flow import Edge, Flow, FlowMode, Node
 from agentify.domain.validate import Violation, integrity
-from agentify.harness.ports import ArtifactLocks, InboxPort, StagingPort
+from agentify.harness.ports import ArtifactLocks, InboxPort, StagingPort, correctable
 
 FRAMEWORK_RETRIES = 1_000
 """Set far above Agentify's own error budgets so the harness's cumulative counter trips first."""
@@ -34,17 +34,6 @@ class FlowToolDeps:
     inbox: InboxPort | None = None
     inbox_categories: tuple[str, ...] = ()
     _cache: dict[str, Flow] = field(default_factory=dict)
-
-
-def correctable(
-    error: str, message: str, location: tuple[str, ...] = (), hint: str = ""
-) -> ModelRetry:
-    return ModelRetry(
-        json.dumps(
-            {"error": error, "message": message, "location": list(location), "hint": hint},
-            sort_keys=True,
-        )
-    )
 
 
 def _violations_error(violations: list[Violation]) -> ModelRetry:

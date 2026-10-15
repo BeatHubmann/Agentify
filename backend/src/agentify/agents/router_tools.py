@@ -8,9 +8,9 @@ from dataclasses import dataclass, field
 
 from pydantic_ai import Agent, RunContext
 
-from agentify.agents.flow_tools import FRAMEWORK_RETRIES, correctable
+from agentify.agents.flow_tools import FRAMEWORK_RETRIES
 from agentify.agents.inbox_tools import register_inbox_tools
-from agentify.harness.ports import DispatchPort, InboxPort, StagingPort
+from agentify.harness.ports import DispatchPort, InboxPort, StagingPort, correctable
 from agentify.registry import Registry
 
 

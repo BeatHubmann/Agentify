@@ -13,10 +13,10 @@ from agentify.api.server import uvicorn_config
 from agentify.api.stream import StreamSettings
 from agentify.identity import OIDCSettings, TokenVerifier
 from agentify.registry import load_registry
-from agentify.secretgate import SecretGate
 from agentify.store.blobs import BlobStore
 from agentify.store.db import Database
 from agentify.store.workspace import Workspace
+from tests.support.gates import make_gate
 
 
 async def main(config: dict[str, str]) -> None:
@@ -28,7 +28,7 @@ async def main(config: dict[str, str]) -> None:
         aws_secret_access_key=config["s3_secret"],
         region_name="eu-central-1",
     )
-    gate = SecretGate()
+    gate = make_gate()
     oidc = OIDCSettings(
         issuer=config["issuer"], audience=config["audience"], jwks_url=config["jwks_url"]
     )

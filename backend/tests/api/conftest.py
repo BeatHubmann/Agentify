@@ -17,11 +17,11 @@ from agentify.api.app import ApiContext, create_app
 from agentify.api.stream import StreamSettings
 from agentify.identity import OIDCSettings, TokenVerifier
 from agentify.registry import Registry
-from agentify.secretgate import SecretGate
 from agentify.store.blobs import BlobStore
 from agentify.store.db import Database
 from agentify.store.workspace import Workspace
 from tests.conftest import BUCKET, KNOWN_SECRET, Infra, s3_client
+from tests.support.gates import make_gate
 
 ISSUER = "https://idp.test.invalid/"
 AUDIENCE = "agentify-api"
@@ -93,7 +93,7 @@ FAST_STREAM = StreamSettings(heartbeat_interval=0.2, attach_seconds=0.5, poll_in
 def api_context(infra: Infra, registry: Registry, jwks_url: str) -> ApiContext:
     """The real API context, with stream timings shortened for tests (heartbeat 0.2 s, attachment 0.5 s)."""
     db = Database(infra.api_conninfo)
-    gate = SecretGate([KNOWN_SECRET])
+    gate = make_gate(KNOWN_SECRET)
     oidc = OIDCSettings(
         issuer=ISSUER,
         audience=AUDIENCE,
