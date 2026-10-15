@@ -1,3 +1,5 @@
+import itertools
+
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -74,3 +76,64 @@ def test_shrink_bound_matches_the_share_of_removed_nodes(flow: Flow, removed: in
     )
     found = {v.code for v in flow_invariants(kept, THRESHOLDS, base=flow)}
     assert ("shrink_exceeds_bound" in found) == (removed / len(flow.nodes) > 0.3)
+
+
+@st.composite
+def flows_with_containers(draw: st.DrawFn) -> tuple[Flow, dict[str, tuple[NodeKind, int]]]:
+    """A valid flow extended by `... -> box -> after`: box holds `direct` children chained in order;
+    optionally its first child is itself an orchestrator holding `inner` children. Returns the flow
+    and, per container, its kind and its direct-child count computed here, not by the code."""
+    flow = draw(valid_flows())
+    kind = draw(st.sampled_from([NodeKind.ORCHESTRATOR, NodeKind.ACTOR]))
+    direct, nested = draw(st.integers(0, 4)), draw(st.booleans())
+    inner = draw(st.integers(0, 3)) if nested and direct > 0 else None
+
+    def ai(node_id: str, node_kind: NodeKind = NodeKind.TASK, parent: str | None = None) -> Node:
+        return Node(
+            id=node_id, label=node_id, kind=node_kind, execution=Execution.AI, parent=parent
+        )
+
+    child_ids = [f"c{i}" for i in range(direct)]
+    nodes = [ai("box", kind), ai("after")]
+    nodes += [
+        ai(c, NodeKind.ORCHESTRATOR if inner is not None and i == 0 else NodeKind.TASK, "box")
+        for i, c in enumerate(child_ids)
+    ]
+    inner_ids = [f"d{i}" for i in range(inner or 0)]
+    nodes += [ai(d, parent="c0") for d in inner_ids]
+    chain = [
+        *itertools.pairwise(child_ids),
+        *itertools.pairwise(inner_ids),
+    ]
+    last = flow.nodes[-1].id
+    edges = [
+        Edge(id="e-in-box", source=last, target="box"),
+        Edge(id="e-box-after", source="box", target="after"),
+        *(Edge(id=f"e-{a}-{b}", source=a, target=b) for a, b in chain),
+    ]
+    counts = {"box": (kind, direct)}
+    if inner is not None:
+        counts["c0"] = (NodeKind.ORCHESTRATOR, inner)
+    extended = flow.model_copy(
+        update={"nodes": (*flow.nodes, *nodes), "edges": (*flow.edges, *edges)}
+    )
+    return extended, counts
+
+
+@given(flows_with_containers())
+def test_a_container_needs_two_direct_children_whatever_its_descendants_and_successors(
+    case: tuple[Flow, dict[str, tuple[NodeKind, int]]],
+) -> None:
+    """INV-5: grandchildren and edge successors are not children; the message uses the same count."""
+    flow, counts = case
+    found = {
+        (v.location, v.message)
+        for v in flow_invariants(flow, THRESHOLDS, base=None)
+        if v.code == "container_too_few_children"
+    }
+    expected = {
+        ((cid,), f"{cid} has {n} direct children; a {kind} needs at least 2.")
+        for cid, (kind, n) in counts.items()
+        if n < 2
+    }
+    assert found == expected
