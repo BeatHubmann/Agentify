@@ -2,6 +2,7 @@
 
 Modes:
 - `mid_run`: claim one run, stage some writes, then hang (the parent SIGKILLs it).
+- `mid_run_edit`: as `mid_run`, for an incremental run over the golden flow (one node edited).
 - `in_commit`: run to the commit and block inside the commit transaction (SIGKILL).
 - `stall`: stage, then pause in a model step (the parent SIGSTOPs and SIGCONTs), then try to continue.
 - `worker`: run the real worker loop; SIGTERM requests a graceful stop.
@@ -54,6 +55,10 @@ async def _stall() -> None:
 def _script(where: str) -> Script:
     if where == "in_commit":
         return Script(golden_calls())
+    if where == "mid_run_edit":
+        return Script(
+            [Step(calls=[("edit_node", {"id": "receive", "label": "R"})]), Step(before=_hang)]
+        )
     if where == "stall":
         return Script([*golden_calls()[:3], Step(before=_stall), *golden_calls()[3:]])
     return Script([*golden_calls()[:3], Step(before=_hang)])
