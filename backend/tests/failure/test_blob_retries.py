@@ -1,5 +1,6 @@
-"""INV-8.SF: a blob put retries transient storage errors, bounded, and every attempt sends exactly
-the gated bytes; nothing is diverted elsewhere (A§10.2, A§18.3)."""
+"""Blob storage retries transient errors, bounded (A§10.2). INV-8.SF: every put attempt sends exactly
+the gated bytes; nothing is diverted elsewhere (A§18.3). INV-10.SF: a read that outlasts the retries
+raises `BlobUnavailable`, never "absent"."""
 
 import uuid
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 
-from agentify.store.blobs import PUT_ATTEMPTS, BlobStore
+from agentify.store.blobs import ATTEMPTS, BlobStore, BlobUnavailable
 from tests.conftest import BUCKET, Infra, s3_client
 from tests.support.gates import make_gate
 
@@ -15,26 +16,36 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 CONTENT = b"Receive the invoice, classify it, compute the fee and approve it."
 
 
-def unavailable() -> Exception:
-    return ClientError({"Error": {"Code": "ServiceUnavailable", "Message": "busy"}}, "PutObject")
+def unavailable(operation: str = "PutObject") -> Exception:
+    return ClientError({"Error": {"Code": "ServiceUnavailable", "Message": "busy"}}, operation)
 
 
-def denied() -> Exception:
-    return ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "PutObject")
+def denied(operation: str = "PutObject") -> Exception:
+    return ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, operation)
 
 
 class FlakyClient:
-    """The real S3 client, except that the first puts raise the given errors."""
+    """The real S3 client, except that the next puts or gets raise the queued errors."""
 
-    def __init__(self, real: Any, failures: list[Exception]) -> None:
+    def __init__(
+        self, real: Any, failures: list[Exception], get_failures: list[Exception] | None = None
+    ) -> None:
         self._real, self._failures = real, failures
+        self.get_failures = get_failures if get_failures is not None else []
         self.sent: list[bytes] = []
+        self.gets = 0
 
     def put_object(self, **kwargs: Any) -> Any:
         self.sent.append(kwargs["Body"])
         if self._failures:
             raise self._failures.pop(0)
         return self._real.put_object(**kwargs)
+
+    def get_object(self, **kwargs: Any) -> Any:
+        self.gets += 1
+        if self.get_failures:
+            raise self.get_failures.pop(0)
+        return self._real.get_object(**kwargs)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
@@ -72,7 +83,7 @@ async def test_storage_that_stays_unavailable_fails_after_bounded_attempts(infra
     outcome, client, engagement = await put_through(infra, [unavailable() for _ in range(5)])
     assert (outcome, client.sent, stored_keys(infra, engagement)) == (
         "ClientError",
-        [CONTENT] * PUT_ATTEMPTS,
+        [CONTENT] * ATTEMPTS,
         0,
     )
 
@@ -80,3 +91,32 @@ async def test_storage_that_stays_unavailable_fails_after_bounded_attempts(infra
 async def test_a_permanent_error_is_not_retried(infra: Infra) -> None:
     outcome, client, engagement = await put_through(infra, [denied()])
     assert (outcome, client.sent, stored_keys(infra, engagement)) == ("ClientError", [CONTENT], 0)
+
+
+async def get_through(infra: Infra, failures: list[Exception]) -> tuple[str, int]:
+    engagement = f"eng-{uuid.uuid4().hex[:8]}"
+    sha = await BlobStore(s3_client(infra), BUCKET).put(
+        engagement, make_gate().check_bytes(CONTENT, "test")
+    )
+    client = FlakyClient(s3_client(infra), [], failures)
+    try:
+        data = await BlobStore(client, BUCKET).get(engagement, sha)
+    except (BlobUnavailable, ClientError) as exc:
+        return type(exc).__name__, client.gets
+    return ("read" if data == CONTENT else "wrong bytes"), client.gets
+
+
+@pytest.mark.parametrize(
+    ("failures", "expected"),
+    [
+        ([unavailable("GetObject")], ("read", 2)),
+        ([EndpointConnectionError(endpoint_url="http://storage.invalid")], ("read", 2)),
+        ([unavailable("GetObject") for _ in range(5)], ("BlobUnavailable", ATTEMPTS)),
+        ([denied("GetObject")], ("ClientError", 1)),
+    ],
+    ids=["one-off", "connection-error", "persistent", "permanent"],
+)
+async def test_a_read_retries_transient_errors_and_reports_persistent_ones_as_unavailable(
+    infra: Infra, failures: list[Exception], expected: tuple[str, int]
+) -> None:
+    assert await get_through(infra, failures) == expected

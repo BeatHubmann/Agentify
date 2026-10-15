@@ -12,6 +12,7 @@ from agentify.harness.ports import DispatchResult, correctable
 from agentify.registry import Registry
 from agentify.secretgate import SecretFound
 from agentify.store import security_events
+from agentify.store.blobs import BlobUnavailable
 from agentify.store.workspace import Workspace
 
 
@@ -31,6 +32,16 @@ async def _refused(
     )
 
 
+def _unreadable(path: str) -> Exception:
+    """A transient read failure is correctable (A§10.2); the artifact is not reported as absent."""
+    return correctable(
+        "artifact_read_failed",
+        f"{path} could not be read just now; storage is temporarily unavailable.",
+        (path,),
+        hint="Try the same call again.",
+    )
+
+
 class RunStaging:
     """The `StagingPort` for one run: reads its staging over its base, writes fenced."""
 
@@ -43,9 +54,12 @@ class RunStaging:
         # A from-scratch run starts from an empty output, never from the previous one (§6.3 item 5).
         from_scratch_output = self._claimed.mode == "from_scratch" and path in self._allowed
         base = None if from_scratch_output else self._claimed.base_revision_id
-        return await self._ws.read_staged_or_base(
-            self._claimed.run_id, self._claimed.process_id, base, path
-        )
+        try:
+            return await self._ws.read_staged_or_base(
+                self._claimed.run_id, self._claimed.process_id, base, path
+            )
+        except BlobUnavailable:
+            raise _unreadable(path) from None
 
     async def write(self, path: str, data: bytes) -> None:
         """A gate hit is correctable once; the same fingerprint again aborts the run (A§10.2)."""
@@ -70,7 +84,10 @@ class HeadReader:
         self._process_id = process_id
 
     async def read(self, path: str) -> bytes | None:
-        return await self._ws.read(self._process_id, path)
+        try:
+            return await self._ws.read(self._process_id, path)
+        except BlobUnavailable:
+            raise _unreadable(path) from None
 
     async def write(self, path: str, data: bytes) -> None:
         raise PermissionError("the router has no write path")
