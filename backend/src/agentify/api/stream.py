@@ -8,7 +8,7 @@ Each run event's sequence number is the SSE `id`, and `after` resumes the stream
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any
@@ -82,42 +82,50 @@ async def relay(
     *,
     after: int,
     settings: StreamSettings,
-    scope: AbstractContextManager[None],
+    scope: Callable[[], AbstractContextManager[None]],
     attached: bool,
 ) -> AsyncIterator[str]:
     """Stream a run's events from `after`. An `attached` client (one who may cancel the run) renews
-    the attachment while it listens, so leaving stops the run like a cancel (A§8.5)."""
-    with scope:
+    the attachment while it listens, so leaving stops the run like a cancel (A§8.5).
 
-        async def heartbeat() -> None:
-            """Renew the attachment periodically; stops once the run is terminal."""
-            while True:
-                if not await runs.attach(ws, run_id, seconds=settings.attach_seconds):
-                    return
-                await asyncio.sleep(settings.heartbeat_interval)
+    `scope` opens the caller's engagement scope around each storage call, never across a `yield`:
+    a client that leaves at a `yield` leaves the generator to the event loop, which closes it in
+    another task, where resetting a scope would fail."""
 
-        beating = asyncio.create_task(heartbeat()) if attached else None
-        try:
-            yield sse(StartChunk(message_id=run_id))
-            cursor, finished = after, False
+    async def heartbeat() -> None:
+        """Renew the attachment periodically; stops once the run is terminal."""
+        while True:
+            with scope():
+                renewed = await runs.attach(ws, run_id, seconds=settings.attach_seconds)
+            if not renewed:
+                return
+            await asyncio.sleep(settings.heartbeat_interval)
+
+    beating = asyncio.create_task(heartbeat()) if attached else None
+    try:
+        yield sse(StartChunk(message_id=run_id))
+        cursor, finished = after, False
+        with scope():
             final = await events.final(ws, run_id)
-            if final is not None and final[0] <= after:  # resumed after the end: repeat the end
-                for chunk in chunks_for(final[0], "finished", final[1]):
-                    yield sse(chunk)
-                finished = True
-            while not finished:
-                for seq, kind, payload in await events.read(ws, run_id, after=cursor):
-                    cursor = seq
-                    # The id rides on an event's last chunk: a client cut off mid-event gets it again.
-                    encoded = list(chunks_for(seq, kind, payload))
-                    for i, chunk in enumerate(encoded, start=1):
-                        yield sse(chunk, seq if i == len(encoded) else None)
-                    finished = finished or kind == "finished"
-                if not finished:
-                    await asyncio.sleep(settings.poll_interval)
-            yield sse(DoneChunk())
-        finally:
-            if beating is not None:
-                beating.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await beating
+        if final is not None and final[0] <= after:  # resumed after the end: repeat the end
+            for chunk in chunks_for(final[0], "finished", final[1]):
+                yield sse(chunk)
+            finished = True
+        while not finished:
+            with scope():
+                batch = await events.read(ws, run_id, after=cursor)
+            for seq, kind, payload in batch:
+                cursor = seq
+                # The id rides on an event's last chunk: a client cut off mid-event gets it again.
+                encoded = list(chunks_for(seq, kind, payload))
+                for i, chunk in enumerate(encoded, start=1):
+                    yield sse(chunk, seq if i == len(encoded) else None)
+                finished = finished or kind == "finished"
+            if not finished:
+                await asyncio.sleep(settings.poll_interval)
+        yield sse(DoneChunk())
+    finally:
+        if beating is not None:
+            beating.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await beating
