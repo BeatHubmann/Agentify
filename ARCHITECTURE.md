@@ -66,6 +66,11 @@ Recorded 2026-10-14 (gate G1). They are binding inputs; changing one is an opera
 | OD-19 | Repository | Public, with branch protection, secret scanning and push protection. **No client-derived material in the repository**, anonymized or not; the real corpus lives in a private EU store |
 | OD-20 | Review | Draft PR on `design/architecture`; fresh-context invariant review before operator review |
 | OD-21 | Database (2026-10-14, after G2) | **AWS RDS for PostgreSQL in `eu-central-1`** by default. Fly Managed Postgres only if Fly confirms in writing that its backups stay in the EU, decided before deployment (A§28 O-1) |
+| OD-22 | Slicing (2026-10-15, post-slice-2 checkpoint) | A step is an A§27 block with an exit criterion; a slice is one PR numbered `<step>.<n>`, about ten ledger rows at most. A step closes at a checkpoint: a close-out record (rows verified, carried with a target step, blocked with the blocker), a `ponytail-audit` and an operator decision. Slices 2a to 2e keep their names. Step 2 ends with one close-out PR for the checkpoint audit's findings |
+| OD-23 | Step 3 (2026-10-15) | An evaluation checkpoint before steps 4 and 5: 3.1 model provider, 3.2 eval harness, 3.3 current-state capture evaluation, then a continue, revise or defer decision by the operator (A§27) |
+| OD-24 | Rule pack revision (2026-10-15) | Draft `agentify-core@1.1.0` in the step-2 close-out PR: blocking-rule applicability follows consequence fields for every node kind, not the archetype. `1.0.0` stays approved until the operator approves the draft, before step 4 |
+| OD-25 | Outcome reporting (2026-10-15) | Evaluations report containment (SC-1, wording unchanged), task completion and semantic quality separately. Thresholds are proposed in 3.2 and approved before any candidate is scored |
+| OD-26 | Model access for development (2026-10-15) | A local AWS SSO profile with Bedrock invoke-only rights in `eu-central-1`; no keys in the repository or in CI, where models stay scripted. A hard spend cap, set when 3.1 starts, enforced by `LedgerModel` |
 
 ### 1.1 G2 approvals (2026-10-14)
 
@@ -1552,13 +1557,13 @@ GitHub Actions as thin orchestration over the same commands developers run (`uv 
 Follows §12.4 with the release-1 scope of OD-12:
 
 1. **Slice 1, walking skeleton of the reliability contract (built 2026-10-14; evidence VERIFICATION E-1):** flow schema, normalization, integrity validation and invariants (with property tests); edit layer and merge (§12.5A property suite); Postgres + MinIO store with run staging, commit, rollback and verification; admission and run state machine; harness gate; one `current-state-modeler` run driven by a scripted model through the real framework; the synthetic minimal golden case. **Done when**, in `VERIFICATION.md`, the `INV-1` and `INV-7` rows for the exit paths S, ME, VF, UC, RC, PK and SF, the `INV-6` concurrent-admission row and the `INV-10` tolerance rows for the authored flow and the edit layer are verified, and every other row is visibly pending.
-2. Remaining §12.5B orchestration cases and §12.5C failure rows for invariants 1–10; router, skills, parallel spec sections; chat stream path.
-3. Eval harness MVP for flow authoring (§12.5D) with the synthetic corpus; real corpus once supplied.
+2. Remaining §12.5B orchestration cases and §12.5C failure rows for invariants 1–10; router, skills, parallel spec sections; chat stream path. Built as slices 2a to 2e (E-3 to E-14), then a close-out PR for the post-slice-2 checkpoint audit (OD-22). Rows carried: BC-B.M3, INV-7.GC, the INV-1 soak and INV-6 across every entry point to step 6; BC-B.M4 to 3.1; rows that need the redesigner, profiler or governance engine to step 4.
+3. Evaluation checkpoint (OD-23): **3.1** Claude on Bedrock EU through the per-role model policy seam, `LedgerModel` with a hard spend cap, worker concurrency; **3.2** eval harness MVP for flow authoring (§12.5D) reporting containment, task completion and semantic quality separately (OD-25); **3.3** current-state capture evaluation on new synthetic cases and the operator's real cases, with repeated trials, a single-agent baseline and human review. Ends with a continue, revise or defer recommendation for the operator.
 4. Node profile, profiler, Markov sensitivity and governance engine with readiness (§12.5E).
 5. Acceptance contracts, dataflow typing, sandbox gateway and sandbox organization, Claude Code executor, conformance (§12.5F).
 6. Deployment hardening: Fly apps, OIDC federation, private networking, drills, canary.
 
-Each slice is its own branch and PR under governed development, with its task contract, proof plan and evidence.
+Each slice is its own branch and PR under governed development, numbered `<step>.<n>` (OD-22), with its task contract, proof plan, evidence and the "Skills used" record (AGENTS.md).
 
 ---
 
