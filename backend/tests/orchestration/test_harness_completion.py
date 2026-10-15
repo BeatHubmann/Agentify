@@ -344,6 +344,8 @@ async def test_a_put_that_silently_did_not_store_never_reaches_history(
     workspace: Workspace, registry: Registry, process_id: str
 ) -> None:
     class LyingBlobs(BlobStore):
+        """Fault injection: a put that reports success without storing anything."""
+
         async def put(self, engagement_id: str, data: Any) -> str:
             from agentify.domain.canonical import sha256_hex
 
