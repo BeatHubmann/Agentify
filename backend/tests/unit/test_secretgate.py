@@ -147,3 +147,36 @@ async def test_concurrent_contexts_match_each_others_values() -> None:
 
     results = await asyncio.gather(run(first, second), run(second, first))
     assert results == ["echo [REDACTED:known-value]", "echo [REDACTED:known-value]"]
+
+
+def test_known_hits_report_registered_values_in_every_encoding_and_ignore_patterns() -> None:
+    """Model requests (A§18.2): a known value refuses the call; client text that merely looks like
+    a credential is the input and passes."""
+    import base64
+
+    known = "model-request-known-credential"
+    holder = gate(known)
+    found = [
+        holder.known_hits(text.encode())
+        for text in (
+            f"tool result: {known}",
+            f"encoded: {base64.b64encode(known.encode()).decode()}",
+            f"the spec quotes {AWS_EXAMPLE_KEY_ID}",
+            "ordinary process text",
+        )
+    ]
+    assert [[h.rule for h in hits] for hits in found] == [["known-value"], ["known-value"], [], []]
+
+
+def test_a_known_value_with_json_escaped_characters_is_found_in_serialized_json() -> None:
+    """Model requests and run events are JSON: a quote or backslash in the value is escaped there."""
+    import json
+
+    value = 'pa"ss\\word-credential'
+    holder = gate(value)
+    serialized = json.dumps({"content": f"tool result: {value}"}).encode()
+    assert (
+        [h.rule for h in holder.known_hits(serialized)],
+        value in holder.redact_text(serialized.decode()).value,
+        holder.redact_text(serialized.decode()).value.count("[REDACTED:known-value]"),
+    ) == (["known-value"], False, 1)
