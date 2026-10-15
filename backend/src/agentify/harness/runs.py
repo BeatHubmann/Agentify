@@ -180,6 +180,8 @@ async def admit_in(
         )
     else:
         something_to_lose = False
+    # Instructions are a run record and reach the model: they pass the gate here (A§18.2).
+    redacted = ws.gate.redact_text(instructions)
     if something_to_lose:
         await _consume_intent(
             conn,
@@ -206,12 +208,20 @@ async def admit_in(
                     initiated_by,
                     entry_point,
                     intent_confirmation_id if something_to_lose else None,
-                    instructions,
+                    redacted.value,
                     parent_run_id,
                 ),
             )
     except errors.UniqueViolation as exc:
         raise AdmissionRefused("already_running", kind.id) from exc
+    await security_events.record(  # its own transaction, where this run is not visible yet
+        ws.db,
+        ws.gate,
+        exit="run_record",
+        hits=redacted.hits,
+        location="run.instructions",
+        process_id=process_id,
+    )
     await conn.execute(
         "INSERT INTO job (id, queue, run_id) VALUES (%s, %s, %s)",
         (f"job_{uuid.uuid4().hex}", kind.id, run_id),
@@ -347,16 +357,6 @@ async def request_cancel(ws: Workspace, run_id: str) -> None:
             "AND state NOT IN ('committed', 'unchanged', 'rolled_back', 'rollback_failed')",
             (run_id,),
         )
-
-
-async def cancel_requested(ws: Workspace, run_id: str) -> bool:
-    async with ws.db.tx() as conn:
-        row = await (
-            await conn.execute(
-                "SELECT cancel_requested_at IS NOT NULL AS c FROM run WHERE id = %s", (run_id,)
-            )
-        ).fetchone()
-    return bool(row and row["c"])
 
 
 async def run_state(ws: Workspace, run_id: str) -> dict[str, object]:

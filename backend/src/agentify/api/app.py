@@ -320,8 +320,10 @@ def _run_and_inbox_routes(app: FastAPI, ctx: ApiContext, access: Access) -> None
 def _chat_routes(app: FastAPI, ctx: ApiContext, access: Access) -> None:
     Caller = Annotated[Principal, Depends(access.principal)]  # noqa: N806 - a type alias
 
-    def streaming(who: Principal, run_id: str, after: int) -> StreamingResponse:
-        body = relay(ctx.ws, run_id, after=after, settings=ctx.stream, scope=scoped(who))
+    def streaming(who: Principal, run_id: str, after: int, *, attached: bool) -> StreamingResponse:
+        body = relay(
+            ctx.ws, run_id, after=after, settings=ctx.stream, scope=scoped(who), attached=attached
+        )
         return StreamingResponse(
             body,
             media_type="text/event-stream",
@@ -352,7 +354,7 @@ def _chat_routes(app: FastAPI, ctx: ApiContext, access: Access) -> None:
                 instructions=chat.as_instructions(earlier, body.message),
             )
             await runs.attach(ctx.ws, run_id, seconds=ctx.stream.attach_seconds)
-        return streaming(who, run_id, 0)
+        return streaming(who, run_id, 0, attached=True)
 
     @app.get("/runs/{run_id}/stream")
     async def resume_stream(run_id: str, who: Caller, after: int = 0) -> StreamingResponse:
@@ -364,8 +366,9 @@ def _chat_routes(app: FastAPI, ctx: ApiContext, access: Access) -> None:
                 ).fetchone()
         if row is None:
             raise NotFound(run_id)
-        await access.require(who, str(row["process_id"]))
-        return streaming(who, run_id, after)
+        engagement = await access.require(who, str(row["process_id"]))
+        # Leaving an attached stream stops the run, so only those who may cancel it attach.
+        return streaming(who, run_id, after, attached=who.has(engagement, "consultant"))
 
     @app.get("/processes/{process_id}/chat")
     async def chat_history(process_id: str, who: Caller) -> list[dict[str, Any]]:

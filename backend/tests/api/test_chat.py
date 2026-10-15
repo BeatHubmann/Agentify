@@ -21,7 +21,7 @@ from agentify import chat
 from agentify.api.app import create_app
 from agentify.api.server import uvicorn_config
 from agentify.domain.edits import merge
-from agentify.harness import execute, runs
+from agentify.harness import execute, runs, sweeper
 from agentify.harness.worker import WorkerConfig, run_worker
 from agentify.registry import AgentKind, Registry
 from agentify.store.workspace import Workspace
@@ -319,6 +319,84 @@ async def test_a_user_edit_made_before_a_disconnect_survives_the_rollback(
     )
 
 
+async def test_a_reader_who_streams_a_run_and_leaves_never_stops_it(
+    *,
+    infra: Infra,
+    api: httpx.AsyncClient,
+    token: TokenFactory,
+    workspace: Workspace,
+    registry: Registry,
+    jwks_url: str,
+) -> None:
+    """Only a caller who may cancel a run attaches to it (A§8.5): a reviewer can watch, not stop."""
+    consultant, reviewer = subject(), subject()
+    setup = await engagement_with(api, token, {consultant: "consultant", reviewer: "reviewer"})
+    starts, watches = setup["users"][consultant][1], setup["users"][reviewer][1]
+    pid = (
+        await api.post(
+            f"/engagements/{setup['engagement_id']}/processes", json={"name": "p"}, headers=starts
+        )
+    ).json()["process_id"]
+    run_id = (
+        await api.post(
+            f"/processes/{pid}/runs",
+            json={"kind": "current-state-modeler", "mode": "from_scratch"},
+            headers=starts,
+        )
+    ).json()["run_id"]
+    async with (
+        live_server(infra, registry, jwks_url) as base,
+        httpx.AsyncClient(base_url=base, timeout=30) as client,
+        worker(workspace, registry, {"current-state-modeler": finishing_modeler}),
+    ):
+        async with client.stream("GET", f"/runs/{run_id}/stream", headers=watches) as response:
+            async for line in response.aiter_lines():
+                if '"tool-output-available"' in line:
+                    break  # the reviewer closes the tab mid-run
+        state = await wait_state(workspace, run_id, {"rolled_back", "committed"})
+    assert (response.status_code, state["state"], state["stream_attached_until"]) == (
+        200,
+        "committed",
+        None,
+    )
+
+
+async def test_a_stream_ends_when_the_sweeper_finishes_a_lost_run(
+    api: httpx.AsyncClient, token: TokenFactory, workspace: Workspace, registry: Registry
+) -> None:
+    """INV-1.PK on the stream: a run whose executor died ends with `finished`, not a hung reply."""
+    pid, headers = await consultant_process(api, token)
+    kind = registry.agents["current-state-modeler"]
+    run_id = (
+        await api.post(
+            f"/processes/{pid}/runs",
+            json={"kind": kind.id, "mode": "from_scratch"},
+            headers=headers,
+        )
+    ).json()["run_id"]
+    lost = await runs.claim(workspace, queue=kind.id, owner="dies", lease_seconds=30, run_id=run_id)
+    assert lost is not None  # the executor that claimed it never comes back
+
+    async def read_stream() -> list[str]:
+        async with api.stream("GET", f"/runs/{run_id}/stream", headers=headers) as response:
+            return [line async for line in response.aiter_lines()]
+
+    reader = asyncio.create_task(read_stream())
+    await asyncio.sleep(0.3)
+    async with workspace.db.tx() as conn:
+        await conn.execute(
+            "UPDATE run SET lease_expires_at = now() - interval '1 second' WHERE id = %s", (run_id,)
+        )
+    swept = await sweeper.sweep(
+        workspace, owner="sweeper", lease_seconds=30, admission_timeout_seconds=600
+    )
+    lines = await asyncio.wait_for(reader, timeout=10)
+    assert ([s.final_state for s in swept if s.run_id == run_id], chunks(lines)[-1]) == (
+        ["rolled_back"],
+        "[DONE]",
+    )
+
+
 async def test_a_reconnect_within_the_grace_period_keeps_the_run_going(
     *,
     infra: Infra,
@@ -469,6 +547,11 @@ async def test_chat_messages_and_run_events_pass_the_secret_gate(
     sinks = [(str(r["kind"]), str(r["p"])) for r in rows]
     sinks += [(str(m["author_kind"]), str(m["content"])) for m in saved]
     async with workspace.db.tx() as conn:
+        instructions = await (
+            await conn.execute("SELECT instructions FROM run WHERE process_id = %s", (pid,))
+        ).fetchall()
+    sinks += [("instructions", str(r["instructions"])) for r in instructions]
+    async with workspace.db.tx() as conn:
         events = await (
             await conn.execute(
                 "SELECT exit, rule, location FROM security_event WHERE process_id = %s", (pid,)
@@ -483,11 +566,12 @@ async def test_chat_messages_and_run_events_pass_the_secret_gate(
     ) == (
         False,
         [],
-        {"user", "agent_run", "tool_call", "text"},
+        {"user", "agent_run", "tool_call", "text", "instructions"},
         [
             ("chat", "known-value", "chat"),
             ("run_event", "known-value", "run_event.text"),
             ("run_event", "known-value", "run_event.tool_call"),
+            ("run_record", "known-value", "run.instructions"),
             ("run_record", "known-value", "run.result_text"),
         ],
     )

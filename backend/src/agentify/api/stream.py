@@ -83,8 +83,10 @@ async def relay(
     after: int,
     settings: StreamSettings,
     scope: AbstractContextManager[None],
+    attached: bool,
 ) -> AsyncIterator[str]:
-    """Stream a run's events from `after`, renewing the attachment while the client listens."""
+    """Stream a run's events from `after`. An `attached` client (one who may cancel the run) renews
+    the attachment while it listens, so leaving stops the run like a cancel (A§8.5)."""
     with scope:
 
         async def heartbeat() -> None:
@@ -94,7 +96,7 @@ async def relay(
                     return
                 await asyncio.sleep(settings.heartbeat_interval)
 
-        beating = asyncio.create_task(heartbeat())
+        beating = asyncio.create_task(heartbeat()) if attached else None
         try:
             yield sse(StartChunk(message_id=run_id))
             cursor, finished = after, False
@@ -110,6 +112,7 @@ async def relay(
                     await asyncio.sleep(settings.poll_interval)
             yield sse(DoneChunk())
         finally:
-            beating.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await beating
+            if beating is not None:
+                beating.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await beating
