@@ -100,6 +100,11 @@ async def relay(
         try:
             yield sse(StartChunk(message_id=run_id))
             cursor, finished = after, False
+            final = await events.final(ws, run_id)
+            if final is not None and final[0] <= after:  # resumed after the end: repeat the end
+                for chunk in chunks_for(final[0], "finished", final[1]):
+                    yield sse(chunk)
+                finished = True
             while not finished:
                 for seq, kind, payload in await events.read(ws, run_id, after=cursor):
                     cursor = seq

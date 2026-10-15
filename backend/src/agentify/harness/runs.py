@@ -10,9 +10,10 @@ from psycopg import errors
 from agentify.domain.edits import EditLayer, merge
 from agentify.domain.envelope import Corrupt, decode_artifact, decode_edit_layer, decode_flow
 from agentify.domain.flow import Flow
+from agentify.harness import events
 from agentify.registry import AgentKind, ArtifactAgentKind, FlowAgentKind
 from agentify.secretgate import SecretFound
-from agentify.store import security_events
+from agentify.store import budget, security_events
 from agentify.store.workspace import Conn, Fence, Workspace
 
 Mode = Literal["from_scratch", "incremental"]
@@ -404,17 +405,31 @@ async def record_result(ws: Workspace, fence: Fence, text: str) -> None:
         )
 
 
-async def record_continuation(ws: Workspace, run_id: str) -> None:
-    """When a router-dispatched run ends, leave a durable notice for a router follow-up turn."""
+async def complete(ws: Workspace, run_id: str) -> str | None:
+    """Write a terminal run's completion effects in one transaction (A§8.5): the `finished` event,
+    a router-dispatched run's continuation, and the release of its open reservations. Returns the
+    final state, or None when the run is not terminal or was already completed."""
     async with ws.db.tx() as conn:
-        await conn.execute(
-            """INSERT INTO router_continuation (id, process_id, child_run_id)
-               SELECT %s, process_id, id FROM run
-               WHERE id = %s AND parent_run_id IS NOT NULL
-                 AND state IN ('committed', 'unchanged', 'rolled_back', 'rollback_failed')
-               ON CONFLICT (child_run_id) DO NOTHING""",
-            (f"cont_{uuid.uuid4().hex}", run_id),
-        )
+        run = await (
+            await conn.execute(
+                """SELECT state, process_id, parent_run_id FROM run
+                   WHERE id = %s AND completed_at IS NULL AND state = ANY(%s) FOR UPDATE""",
+                (run_id, list(TERMINAL_STATES)),
+            )
+        ).fetchone()
+        if run is None:
+            return None
+        state = str(run["state"])
+        await events.append(conn, run_id, "finished", json.dumps({"state": state}))
+        if run["parent_run_id"] is not None:
+            await conn.execute(
+                """INSERT INTO router_continuation (id, process_id, child_run_id)
+                   VALUES (%s, %s, %s) ON CONFLICT (child_run_id) DO NOTHING""",
+                (f"cont_{uuid.uuid4().hex}", run["process_id"], run_id),
+            )
+        await budget.release_run(conn, run_id)
+        await conn.execute("UPDATE run SET completed_at = now() WHERE id = %s", (run_id,))
+    return state
 
 
 async def admit_router_followups(ws: Workspace, router: AgentKind) -> list[str]:

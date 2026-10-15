@@ -402,6 +402,53 @@ async def test_a_stream_ends_when_the_sweeper_finishes_a_lost_run(
     )
 
 
+@pytest.mark.parametrize("before_final", [1, 0], ids=["before-the-final-event", "at-its-cursor"])
+async def test_resuming_a_finished_run_ends_with_its_final_chunk(
+    api: httpx.AsyncClient,
+    token: TokenFactory,
+    workspace: Workspace,
+    registry: Registry,
+    before_final: int,
+) -> None:
+    """External review R2: a client resuming at the `finished` event's own id must not wait forever."""
+    pid, headers = await consultant_process(api, token)
+    kind = registry.agents["current-state-modeler"]
+    run_id = (
+        await api.post(
+            f"/processes/{pid}/runs",
+            json={"kind": kind.id, "mode": "from_scratch"},
+            headers=headers,
+        )
+    ).json()["run_id"]
+    assert await runs.claim(workspace, queue=kind.id, owner="dies", lease_seconds=30, run_id=run_id)
+    async with workspace.db.tx() as conn:
+        await conn.execute(
+            "UPDATE run SET lease_expires_at = now() - interval '1 second' WHERE id = %s", (run_id,)
+        )
+    await sweeper.sweep(workspace, owner="sweeper", lease_seconds=30, admission_timeout_seconds=600)
+    async with workspace.db.tx() as conn:
+        final = await (
+            await conn.execute(
+                "SELECT seq FROM run_event WHERE run_id = %s AND kind = 'finished'", (run_id,)
+            )
+        ).fetchone()
+    assert final is not None
+
+    async def resume() -> list[str]:
+        after = int(str(final["seq"])) - before_final
+        async with api.stream(
+            "GET", f"/runs/{run_id}/stream", params={"after": after}, headers=headers
+        ) as response:
+            return [line async for line in response.aiter_lines()]
+
+    lines = await asyncio.wait_for(resume(), timeout=10)
+    assert [p if p == "[DONE]" else p["type"] for p in chunks(lines)] == [
+        "start",
+        "abort",
+        "[DONE]",
+    ]
+
+
 async def test_a_reconnect_within_the_grace_period_keeps_the_run_going(
     *,
     infra: Infra,

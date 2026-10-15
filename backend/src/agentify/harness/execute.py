@@ -315,17 +315,15 @@ async def finish(
     registry: Registry | None = None,
 ) -> str:
     """The single place a run ends. Returns the final run state, or `left_for_sweeper` when
-    storage did not answer in time (the run then ends when its lease expires)."""
+    storage did not answer in time (the run then ends when its lease expires). A run that ends
+    here but dies before `runs.complete` is completed by the sweeper."""
     final = "left_for_sweeper"
     with anyio.move_on_after((config or HarnessConfig()).storage_timeout):
         final = await _finish(
             ws, claimed, kind, outcome, config=config or HarnessConfig(), registry=registry
         )
-        await budget.release_run(ws.db, claimed.run_id)  # reservations are never left open
-        if final in runs.TERMINAL_STATES:
-            await events.publish(ws, claimed.fence, "finished", {"state": final})
-        if final in runs.TERMINAL_STATES and claimed.parent_run_id is not None:
-            await runs.record_continuation(ws, claimed.run_id)
+        if final in runs.TERMINAL_STATES:  # otherwise the process that owns the run completes it
+            await runs.complete(ws, claimed.run_id)
     return final
 
 

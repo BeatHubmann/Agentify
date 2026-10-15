@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
+from psycopg import AsyncConnection
+
 from agentify.store.db import Database
 
 ScopeKind = Literal["run", "process", "engagement", "deployment"]
@@ -138,12 +140,12 @@ async def release(db: Database, reservation_id: str) -> None:
         )
 
 
-async def release_run(db: Database, run_id: str) -> int:
-    """Release a finished or lost run's open reservations (A§17.3). Returns how many."""
-    async with db.tx() as conn:
-        released = await conn.execute(
-            """UPDATE budget_reservation SET state = 'released', closed_at = now()
-               WHERE run_id = %s AND state = 'open'""",
-            (run_id,),
-        )
+async def release_run(conn: AsyncConnection[dict[str, object]], run_id: str) -> int:
+    """Release a finished run's open reservations (A§17.3), in the caller's transaction. Returns
+    how many."""
+    released = await conn.execute(
+        """UPDATE budget_reservation SET state = 'released', closed_at = now()
+           WHERE run_id = %s AND state = 'open'""",
+        (run_id,),
+    )
     return released.rowcount
