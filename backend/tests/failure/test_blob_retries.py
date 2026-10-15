@@ -47,6 +47,12 @@ class FlakyClient:
             raise self.get_failures.pop(0)
         return self._real.get_object(**kwargs)
 
+    def head_object(self, **kwargs: Any) -> Any:
+        self.gets += 1
+        if self.get_failures:
+            raise self.get_failures.pop(0)
+        return self._real.head_object(**kwargs)
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 
@@ -120,3 +126,28 @@ async def test_a_read_retries_transient_errors_and_reports_persistent_ones_as_un
     infra: Infra, failures: list[Exception], expected: tuple[str, int]
 ) -> None:
     assert await get_through(infra, failures) == expected
+
+
+@pytest.mark.parametrize(
+    ("stored", "failures", "expected"),
+    [
+        (True, [unavailable("HeadObject")], ("True", 2)),
+        (False, [], ("False", 1)),
+        (True, [unavailable("HeadObject") for _ in range(5)], ("BlobUnavailable", ATTEMPTS)),
+        (True, [denied("HeadObject")], ("ClientError", 1)),
+    ],
+    ids=["one-off", "missing", "persistent", "permanent"],
+)
+async def test_an_existence_check_retries_transient_errors_like_a_read(
+    infra: Infra, stored: bool, failures: list[Exception], expected: tuple[str, int]
+) -> None:
+    """The commit checks every staged blob exists; one busy answer must not fail the commit."""
+    engagement = f"eng-{uuid.uuid4().hex[:8]}"
+    gated = make_gate().check_bytes(CONTENT, "test")
+    sha = await BlobStore(s3_client(infra), BUCKET).put(engagement, gated) if stored else "0" * 64
+    client = FlakyClient(s3_client(infra), [], failures)
+    try:
+        outcome = str(await BlobStore(client, BUCKET).exists(engagement, sha))
+    except (BlobUnavailable, ClientError) as exc:
+        outcome = type(exc).__name__
+    assert (outcome, client.gets) == expected
