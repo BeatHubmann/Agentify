@@ -4,9 +4,8 @@ Like the flow gate it re-reads stored bytes and never depends on anything the mo
 
 from typing import TYPE_CHECKING
 
-from agentify.agents.artifact_tools import decode_envelope
 from agentify.artifacts import CheckContext, parse_body, run_checks
-from agentify.domain.envelope import Corrupt
+from agentify.domain.envelope import Corrupt, decode_artifact
 from agentify.domain.validate import Violation
 from agentify.harness.gate import TRUNCATED_FINISH_REASONS, GateResult
 from agentify.registry import ArtifactAgentKind, Registry
@@ -30,7 +29,7 @@ async def validate_outputs(
                 Violation("missing_output", f"{output.path} was not produced.", (output.path,))
             )
             continue
-        envelope = decode_envelope(data)
+        envelope = decode_artifact(data)
         if isinstance(envelope, Corrupt) or envelope.artifact_type != artifact_type.id:
             found.append(
                 Violation("output_corrupt", f"{output.path} is unreadable.", (output.path,))

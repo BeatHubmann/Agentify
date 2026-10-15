@@ -13,7 +13,7 @@ from pydantic_ai import Agent, RunContext
 from agentify.agents.flow_tools import FRAMEWORK_RETRIES
 from agentify.agents.inbox_tools import register_inbox_tools
 from agentify.artifacts import CheckContext, parse_body, run_checks
-from agentify.domain.envelope import Corrupt, Envelope, encode
+from agentify.domain.envelope import Corrupt, decode_artifact, encode
 from agentify.harness.ports import ArtifactLocks, InboxPort, StagingPort, correctable
 from agentify.registry import ArtifactType, OutputDecl
 
@@ -32,19 +32,12 @@ class ArtifactToolDeps:
     locks: ArtifactLocks = field(default_factory=ArtifactLocks)
 
 
-def decode_envelope(data: bytes) -> Envelope | Corrupt:
-    try:
-        return Envelope.model_validate(json.loads(data))
-    except ValueError as exc:
-        return Corrupt(f"unreadable envelope: {type(exc).__name__}")
-
-
 async def current_body(deps: ArtifactToolDeps, path: str) -> dict[str, Any]:
     decl, artifact_type = deps.outputs[path]
     data = await deps.staging.read(path)
     if data is None:
         return dict(decl.initial)
-    envelope = decode_envelope(data)
+    envelope = decode_artifact(data)
     if isinstance(envelope, Corrupt) or envelope.artifact_type != artifact_type.id:
         raise correctable("read_failure", f"{path} is unreadable.", (path,))
     return dict(envelope.body)
