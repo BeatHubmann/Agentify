@@ -159,6 +159,26 @@ def test_flow_invariants_report_each_violation(flow: Flow, expected_code: str) -
     assert expected_code in codes(flow_invariants(flow, THRESHOLDS, base=None))
 
 
+def test_grandchildren_do_not_count_as_children() -> None:
+    """INV-5: an actor whose only direct child is an orchestrator with two children of its own
+    still has one child. Pins the case a random property run can miss."""
+    flow = Flow(
+        mode=FlowMode.CURRENT,
+        nodes=(
+            node("in"),
+            node("a", NodeKind.ACTOR, Execution.AI),
+            node("o", NodeKind.ORCHESTRATOR, Execution.AI, parent="a"),
+            node("t1", NodeKind.TASK, Execution.AI, parent="o"),
+            node("t2", NodeKind.TASK, Execution.AI, parent="o"),
+            node("out"),
+        ),
+        edges=(edge("in", "a"), edge("t1", "t2"), edge("a", "out")),
+    )
+    assert [(v.code, v.location) for v in flow_invariants(flow, THRESHOLDS, base=None)] == [
+        ("container_too_few_children", ("a",))
+    ]
+
+
 def test_container_children_are_on_paths_through_the_container() -> None:
     flow = Flow(
         mode=FlowMode.CURRENT,

@@ -11,7 +11,15 @@ from agentify.secretgate import Hit, Scrubbed, SecretFound, SecretGate
 from agentify.store.db import Database
 
 Exit = Literal[
-    "staged_write", "blob", "inbox", "chat", "run_event", "run_record", "http_body", "decision"
+    "staged_write",
+    "blob",
+    "inbox",
+    "chat",
+    "run_event",
+    "run_record",
+    "http_body",
+    "decision",
+    "model_request",
 ]
 AllowAction = Literal["allow", "revoke"]
 

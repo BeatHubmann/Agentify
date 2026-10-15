@@ -8,6 +8,7 @@ otherwise rolled back and verified.
 from dataclasses import dataclass
 
 from agentify.harness import events, runs
+from agentify.store import budget
 from agentify.store.workspace import Fence, Workspace
 
 ACTIVE = ("running", "gating", "committing", "rolling_back")
@@ -40,6 +41,7 @@ async def sweep(
         if fence is None:
             continue
         final = await _finish_lost_run(ws, fence)
+        await budget.release_run(ws.db, fence.run_id)
         # The run's executor is gone; without this event its stream would wait forever (A§8.5).
         await events.publish(ws, fence, "finished", {"state": final})
         results.append(SweepResult(fence.run_id, final))

@@ -23,7 +23,7 @@ from tests.orchestration.test_run_exit_paths import (
     run_once,
 )
 from tests.support.flows import linear, minimal_golden
-from tests.support.scripted import Script, Step, golden_calls
+from tests.support.scripted import Script, ScriptedSource, Step, golden_calls
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 KIND = "current-state-modeler"
@@ -144,7 +144,7 @@ async def test_each_failure_exit_frees_the_slot(
             claimed,
             kind,
             agent=build_modeler("m"),
-            model=Script(steps).model(),
+            source=ScriptedSource(Script(steps)),
             prompt="go",
         )
     )
@@ -308,7 +308,12 @@ async def test_the_gate_judges_stored_bytes_not_the_tool_cache(
     )
     assert claimed is not None
     final = await execute.execute(
-        workspace, claimed, kind, agent=build_modeler("m"), model=Script(steps).model(), prompt="go"
+        workspace,
+        claimed,
+        kind,
+        agent=build_modeler("m"),
+        source=ScriptedSource(Script(steps)),
+        prompt="go",
     )
     committed = await head_flow(workspace, process_id)
     assert (final, committed) == (expected, minimal_golden() if stored == "valid" else None)

@@ -11,7 +11,8 @@ import pytest
 TESTS = Path(__file__).resolve().parents[1]
 SUITES = ("orchestration", "failure", "api", "support")
 BUILDERS = {"build_modeler", "build_agent", "build_artifact_agent", "build_router"}
-ALLOWED_MODEL_MODULES = {"pydantic_ai.models.function"}
+# The base module carries only types (`Model`); scripted models come from the function module only.
+ALLOWED_MODEL_MODULES = {"pydantic_ai.models", "pydantic_ai.models.function"}
 
 
 def _call_name(node: ast.expr) -> str:

@@ -16,7 +16,7 @@ from agentify.store.workspace import Workspace
 from tests.conftest import REGISTRY_ROOT, Infra
 from tests.failure.test_kill_and_stall import BACKEND
 from tests.orchestration.test_run_exit_paths import history, leftovers
-from tests.support.scripted import Script, golden_calls
+from tests.support.scripted import Script, ScriptedSource, golden_calls
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 KIND = "current-state-modeler"
@@ -92,7 +92,7 @@ async def test_the_worker_loop_runs_queued_runs_and_sweeps_lost_ones_periodicall
     stop = asyncio.Event()
 
     def model_for(_kind: AgentKind) -> object:
-        return Script(golden_calls()).model()
+        return ScriptedSource(Script(golden_calls()))
 
     config = WorkerConfig(owner="worker-1", queues=(KIND,), poll_interval=0.1, sweep_interval=0.5)
     task = asyncio.create_task(run_worker(workspace, registry, model_for, config, stop))  # type: ignore[arg-type]

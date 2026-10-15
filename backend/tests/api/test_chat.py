@@ -37,7 +37,7 @@ from tests.api.conftest import (
 from tests.conftest import KNOWN_SECRET, REGISTRY_ROOT, Infra
 from tests.orchestration.test_run_exit_paths import commit_golden, head_flow, history, leftovers
 from tests.orchestration.test_user_edits import edit_layer
-from tests.support.scripted import Script, Step
+from tests.support.scripted import Script, ScriptedSource, Step
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 BACKEND = Path(__file__).resolve().parents[2]
@@ -88,11 +88,16 @@ def qa_router() -> Script:
     )
 
 
+# AWS's documented example key, built at runtime: pattern-only, so it may go to the model (A§18.2).
+EXAMPLE_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+
+
 def leaky_router() -> Script:
-    """Echoes a secret in a tool argument and in its reply, besides the one in the user's message."""
+    """Puts a pattern-only key in a tool argument (the next request carries it back to the model,
+    which A§18.2 allows) and the user's known secret in its final reply, which no request carries."""
     return Script(
         [
-            Step(calls=[("load_skill", {"name": KNOWN_SECRET})]),
+            Step(calls=[("load_skill", {"name": f"skill for {EXAMPLE_KEY}"})]),
             Step(text=f"The key you sent was {KNOWN_SECRET}."),
         ]
     )
@@ -103,7 +108,7 @@ async def worker(
     ws: Workspace, registry: Registry, plan: dict[str, Callable[[], Script]]
 ) -> AsyncIterator[None]:
     def model_for(kind: AgentKind) -> object:
-        return plan[kind.id]().model()
+        return ScriptedSource(plan[kind.id]())
 
     stop = asyncio.Event()
     config = WorkerConfig(
@@ -557,20 +562,21 @@ async def test_chat_messages_and_run_events_pass_the_secret_gate(
                 "SELECT exit, rule, location FROM security_event WHERE process_id = %s", (pid,)
             )
         ).fetchall()
-    marker = "[REDACTED:known-value]"
     assert (
-        KNOWN_SECRET in streamed,
-        [name for name, text in sinks if KNOWN_SECRET in text],
-        {name for name, text in sinks if marker in text},
+        [KNOWN_SECRET in streamed, EXAMPLE_KEY in streamed],
+        [name for name, text in sinks if KNOWN_SECRET in text or EXAMPLE_KEY in text],
+        {name for name, text in sinks if "[REDACTED:known-value]" in text},
+        {name for name, text in sinks if "[REDACTED:aws-access-key-id]" in text},
         sorted({(str(e["exit"]), str(e["rule"]), str(e["location"])) for e in events}),
     ) == (
-        False,
+        [False, False],
         [],
-        {"user", "agent_run", "tool_call", "text", "instructions"},
+        {"user", "agent_run", "text", "instructions"},
+        {"tool_call"},
         [
             ("chat", "known-value", "chat"),
+            ("run_event", "aws-access-key-id", "run_event.tool_call"),
             ("run_event", "known-value", "run_event.text"),
-            ("run_event", "known-value", "run_event.tool_call"),
             ("run_record", "known-value", "run.instructions"),
             ("run_record", "known-value", "run.result_text"),
         ],
