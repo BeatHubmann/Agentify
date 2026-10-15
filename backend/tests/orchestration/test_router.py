@@ -47,9 +47,9 @@ async def run_worker_until(
     stop = asyncio.Event()
     config = WorkerConfig(
         owner="worker-r",
-        queues=tuple(
-            scripts.plan
-        ),  # only the kinds this test scripts; other tests leave runs queued poll_interval=0.05, sweep_interval=60
+        queues=tuple(scripts.plan),  # only the kinds this test scripts; others leave runs queued
+        poll_interval=0.05,
+        sweep_interval=60,
     )
     task = asyncio.create_task(run_worker(ws, registry, scripts, config, stop))  # type: ignore[arg-type]
     try:
