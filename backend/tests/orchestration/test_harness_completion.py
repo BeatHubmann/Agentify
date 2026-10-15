@@ -250,12 +250,14 @@ async def test_an_exception_inside_a_tool_aborts_cleanly(
         ws, registry, process_id, Script([Step(calls=[("read_flow", {})])] * 3)
     )
     state = await runs.run_state(ws, run_id)
+    detail = str(state["outcome_detail_scrubbed"])
     assert (
         final,
         state["outcome"],
-        state["outcome_detail_scrubbed"],
+        detail.splitlines()[0],
+        "KeyError: 'bug in a read path'" in detail,  # the traceback is kept, scrubbed (A§10.2)
         await history(ws, process_id),
-    ) == ("rolled_back", "aborted", "KeyError", [])
+    ) == ("rolled_back", "aborted", "KeyError", True, [])
 
 
 # BC-B.13: request-limit exhaustion ends in a clean rollback, not a hang.

@@ -14,6 +14,7 @@ from psycopg import AsyncConnection
 from agentify.domain.canonical import sha256_hex
 from agentify.domain.validate import Violation
 from agentify.secretgate import SecretGate
+from agentify.store import security_events
 from agentify.store.blobs import BlobStore
 from agentify.store.db import Database
 
@@ -175,8 +176,17 @@ class Workspace:
     # -- run staging -------------------------------------------------------------------------
 
     async def stage(self, fence: Fence, process_id: str, path: str, data: bytes) -> str:
-        """Write into the run's private staging, fenced by its lease. Returns the blob hash."""
-        scrubbed = self.gate.check_bytes(data, where=f"staged {path}")
+        """Write into the run's private staging, fenced by its lease. Returns the blob hash. A gate
+        hit raises `SecretFound`, unless the engagement allow-lists that fingerprint (A§18.3)."""
+        scrubbed = await security_events.checked(
+            self.db,
+            self.gate,
+            data,
+            exit="staged_write",
+            location=path,
+            process_id=process_id,
+            run_id=fence.run_id,
+        )
         sha = sha256_hex(scrubbed.value)
         async with self.db.tx() as conn:
             engagement_id = await self.engagement_of(conn, process_id)
@@ -335,7 +345,19 @@ class Workspace:
     # -- rollback ----------------------------------------------------------------------------
 
     async def rollback(self, fence: Fence, *, outcome: str, detail: str | None = None) -> bool:
-        """Discard the run's staging and verify the result. Returns True if verification passed."""
+        """Discard the run's staging and verify the result. Returns True if verification passed.
+        The detail is a run record, so it passes the gate here, its one write point (A§18.2)."""
+        if detail is not None:
+            scrubbed = self.gate.redact_text(detail)
+            detail = scrubbed.value
+            await security_events.record(
+                self.db,
+                self.gate,
+                exit="run_record",
+                hits=scrubbed.hits,
+                location="run.outcome_detail",
+                run_id=fence.run_id,
+            )
         async with self.db.tx() as conn:
             moved = await conn.execute(
                 """UPDATE run SET state = 'rolling_back',

@@ -19,10 +19,10 @@ from agentify.agents.flow_tools import build_modeler
 from agentify.harness import execute, runs
 from agentify.harness.worker import WorkerConfig, run_worker
 from agentify.registry import load_registry
-from agentify.secretgate import SecretGate
 from agentify.store.blobs import BlobStore
 from agentify.store.db import Database
 from agentify.store.workspace import Workspace
+from tests.support.gates import make_gate
 from tests.support.scripted import Script, Step, golden_calls
 
 
@@ -92,9 +92,9 @@ async def main(argv: list[str]) -> None:
     )
     blobs = BlobStore(s3, "artifacts")
     ws = (
-        HangInsideCommit(db, blobs, SecretGate())
+        HangInsideCommit(db, blobs, make_gate())
         if where == "in_commit"
-        else Workspace(db, blobs, SecretGate())
+        else Workspace(db, blobs, make_gate())
     )
     if where == "worker":
         await _as_worker(ws, registry_root)

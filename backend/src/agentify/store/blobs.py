@@ -3,7 +3,8 @@
 from typing import TYPE_CHECKING
 
 import anyio
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, HTTPClientError
+from botocore.exceptions import ConnectionError as BotoConnectionError
 
 from agentify.domain.canonical import sha256_hex
 from agentify.secretgate import Scrubbed
@@ -13,6 +14,15 @@ if TYPE_CHECKING:
 
 _ALREADY_EXISTS = {"PreconditionFailed", "412"}
 _MISSING = {"404", "NoSuchKey", "NotFound"}
+_TRANSIENT = {"InternalError", "ServiceUnavailable", "SlowDown", "RequestTimeout", "500", "503"}
+PUT_ATTEMPTS = 3
+_BACKOFF_SECONDS = 0.1
+
+
+def _transient(exc: Exception) -> bool:
+    if isinstance(exc, ClientError):
+        return _error_code(exc) in _TRANSIENT
+    return isinstance(exc, BotoConnectionError | HTTPClientError)
 
 
 def _error_code(exc: ClientError) -> str | None:
@@ -33,7 +43,9 @@ class BlobStore:
         return f"{engagement_id}/sha256/{sha}"
 
     async def put(self, engagement_id: str, data: Scrubbed[bytes]) -> str:
-        """Store the gated bytes; an existing key is left untouched (conditional put)."""
+        """Store the gated bytes; an existing key is left untouched (conditional put). Transient
+        storage errors are retried, bounded, with the same gated bytes (A§18.3); a retry after a
+        lost response finds the key present, which counts as stored."""
         sha = sha256_hex(data.value)
 
         def _put() -> None:
@@ -48,8 +60,17 @@ class BlobStore:
                 if _error_code(exc) not in _ALREADY_EXISTS:
                     raise
 
-        await anyio.to_thread.run_sync(_put)
-        return sha
+        attempt = 1
+        while True:
+            try:
+                await anyio.to_thread.run_sync(_put)
+            except (ClientError, BotoConnectionError, HTTPClientError) as exc:
+                if attempt == PUT_ATTEMPTS or not _transient(exc):
+                    raise
+            else:
+                return sha
+            await anyio.sleep(_BACKOFF_SECONDS * attempt)
+            attempt += 1
 
     async def get(self, engagement_id: str, sha: str) -> bytes:
         def _get() -> bytes:

@@ -4,8 +4,8 @@ from typing import Any, Protocol
 
 from pydantic_ai import Agent, RunContext
 
-from agentify.agents.flow_tools import FRAMEWORK_RETRIES, correctable
-from agentify.harness.ports import InboxPort
+from agentify.agents.flow_tools import FRAMEWORK_RETRIES
+from agentify.harness.ports import InboxPort, correctable
 
 
 class HasInbox(Protocol):

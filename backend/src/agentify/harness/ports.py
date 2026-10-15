@@ -1,8 +1,11 @@
 """What agents may use from the harness (A§4): protocols injected into each run's dependencies."""
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Protocol
+
+from pydantic_ai import ModelRetry
 
 
 class StagingPort(Protocol):
@@ -44,3 +47,15 @@ class ArtifactLocks:
 
     def for_path(self, path: str) -> asyncio.Lock:
         return self._locks.setdefault(path, asyncio.Lock())
+
+
+def correctable(
+    error: str, message: str, location: tuple[str, ...] = (), hint: str = ""
+) -> ModelRetry:
+    """A correctable error (A§10.2): the payload the harness counts and the model sees."""
+    return ModelRetry(
+        json.dumps(
+            {"error": error, "message": message, "location": list(location), "hint": hint},
+            sort_keys=True,
+        )
+    )

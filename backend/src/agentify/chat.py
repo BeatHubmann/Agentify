@@ -7,6 +7,7 @@ the secret gate before it is stored (chat is an exit, A§18.2)."""
 from dataclasses import dataclass
 from typing import Literal
 
+from agentify.store import security_events
 from agentify.store.workspace import Workspace
 
 AuthorKind = Literal["user", "agent_run"]
@@ -30,7 +31,17 @@ async def append(
     content: str,
     run_id: str | None = None,
 ) -> int:
-    scrubbed = ws.gate.redact_text(content).value
+    redacted = ws.gate.redact_text(content)
+    await security_events.record(
+        ws.db,
+        ws.gate,
+        exit="chat",
+        hits=redacted.hits,
+        location="chat",
+        process_id=process_id,
+        run_id=run_id,
+    )
+    scrubbed = redacted.value
     async with ws.db.tx() as conn:
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext('chat:' || %s))", (process_id,))
         row = await (

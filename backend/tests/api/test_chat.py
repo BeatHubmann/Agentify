@@ -408,12 +408,29 @@ async def test_chat_messages_and_run_events_pass_the_secret_gate(
         ).fetchall()
     sinks = [(str(r["kind"]), str(r["p"])) for r in rows]
     sinks += [(str(m["author_kind"]), str(m["content"])) for m in saved]
+    async with workspace.db.tx() as conn:
+        events = await (
+            await conn.execute(
+                "SELECT exit, rule, location FROM security_event WHERE process_id = %s", (pid,)
+            )
+        ).fetchall()
     marker = "[REDACTED:known-value]"
     assert (
         KNOWN_SECRET in streamed,
         [name for name, text in sinks if KNOWN_SECRET in text],
         {name for name, text in sinks if marker in text},
-    ) == (False, [], {"user", "agent_run", "tool_call", "text"})
+        sorted({(str(e["exit"]), str(e["rule"]), str(e["location"])) for e in events}),
+    ) == (
+        False,
+        [],
+        {"user", "agent_run", "tool_call", "text"},
+        [
+            ("chat", "known-value", "chat"),
+            ("run_event", "known-value", "run_event.text"),
+            ("run_event", "known-value", "run_event.tool_call"),
+            ("run_record", "known-value", "run.result_text"),
+        ],
+    )
 
 
 async def test_concurrent_chat_sessions_never_overwrite_each_other(

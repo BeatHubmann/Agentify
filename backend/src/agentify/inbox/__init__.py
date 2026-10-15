@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from agentify.harness import runs
 from agentify.registry import Registry
+from agentify.store import security_events
 from agentify.store.workspace import Workspace
 
 
@@ -56,8 +57,17 @@ def _as_dict(value: object) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _body(ws: Workspace, text: str) -> str:
-    ws.gate.check_bytes(text.encode("utf-8"), where="inbox")
+async def _body(ws: Workspace, process_id: str, text: str, run_id: str | None = None) -> str:
+    """Inbox items fail on a gate hit, never stored redacted (A§18.2)."""
+    await security_events.checked(
+        ws.db,
+        ws.gate,
+        text.encode("utf-8"),
+        exit="inbox",
+        location="inbox",
+        process_id=process_id,
+        run_id=run_id,
+    )
     return text
 
 
@@ -76,6 +86,7 @@ async def ask(
     if category not in registry.inbox_categories:
         raise InboxRejected("unknown_category", category)
     item_id = f"ibx_{uuid.uuid4().hex}"
+    body = await _body(ws, process_id, question, run_id)
     async with ws.db.tx() as conn:
         await conn.execute(
             """INSERT INTO inbox_item (item_id, version, process_id, kind, category, status, options,
@@ -87,7 +98,7 @@ async def ask(
                 kind,
                 category,
                 json.dumps(options),
-                _body(ws, question),
+                body,
                 json.dumps(metadata or {}),
                 "agent_run" if run_id else "system",
                 run_id or "system",
@@ -145,6 +156,7 @@ async def answer(
         raise InboxRejected("already_answered", item_id)
     if question.options and text not in question.options:
         raise InboxRejected("not_an_option", text)
+    body = await _body(ws, process_id, text)  # before any side effect
     metadata: dict[str, Any] = {}
     if question.kind == "confirmation" and isinstance(author, UserAuthor) and text == "confirm":
         metadata["intent_confirmation_id"] = await runs.confirm_intent(
@@ -167,7 +179,7 @@ async def answer(
                 process_id,
                 item_id,
                 question.category,
-                _body(ws, text),
+                body,
                 json.dumps(metadata),
                 author_kind,
                 author_id,

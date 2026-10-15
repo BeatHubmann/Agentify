@@ -7,9 +7,28 @@ from dataclasses import asdict
 
 from agentify import inbox
 from agentify.harness import runs
-from agentify.harness.ports import DispatchResult
+from agentify.harness.budget import RunAbort
+from agentify.harness.ports import DispatchResult, correctable
 from agentify.registry import Registry
+from agentify.secretgate import SecretFound
+from agentify.store import security_events
 from agentify.store.workspace import Workspace
+
+
+async def _refused(
+    ws: Workspace, claimed: runs.ClaimedRun, exc: SecretFound, location: str
+) -> Exception:
+    """An agent write the gate refused (the exit recorded the hit): correctable once, abort on the
+    same fingerprint again."""
+    if await security_events.refusals_in_run(ws.db, claimed.run_id, exc.hit) > 1:
+        return RunAbort("secret_gate_repeated", f"{exc.rule} at {location}")
+    return correctable(
+        "secret_in_content",
+        f"Nothing was written: the content contains text the secret gate treats as a credential "
+        f"({exc.rule}).",
+        (location,),
+        hint="Remove or paraphrase the credential-like text, then write again.",
+    )
 
 
 class RunStaging:
@@ -29,9 +48,13 @@ class RunStaging:
         )
 
     async def write(self, path: str, data: bytes) -> None:
+        """A gate hit is correctable once; the same fingerprint again aborts the run (A§10.2)."""
         if path not in self._allowed:
             raise PermissionError(f"{path} is not a declared output of this run")
-        await self._ws.stage(self._claimed.fence, self._claimed.process_id, path, data)
+        try:
+            await self._ws.stage(self._claimed.fence, self._claimed.process_id, path, data)
+        except SecretFound as exc:
+            raise await _refused(self._ws, self._claimed, exc, path) from None
 
     async def list_paths(self, prefix: str) -> list[str]:
         return await self._ws.list_paths(
@@ -61,15 +84,18 @@ class RunInbox:
         self._ws, self._registry, self._claimed = ws, registry, claimed
 
     async def ask(self, category: str, question: str, options: list[str]) -> str:
-        return await inbox.ask(
-            self._ws,
-            self._registry,
-            process_id=self._claimed.process_id,
-            category=category,
-            question=question,
-            options=options,
-            run_id=self._claimed.run_id,
-        )
+        try:
+            return await inbox.ask(
+                self._ws,
+                self._registry,
+                process_id=self._claimed.process_id,
+                category=category,
+                question=question,
+                options=options,
+                run_id=self._claimed.run_id,
+            )
+        except SecretFound as exc:
+            raise await _refused(self._ws, self._claimed, exc, "inbox") from None
 
     async def read(self, status: str | None) -> str:
         found = await inbox.items(self._ws, self._claimed.process_id, status=status)

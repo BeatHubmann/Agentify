@@ -34,6 +34,7 @@ async def run_once(
     *,
     mode: runs.Mode = "from_scratch",
     confirmation: str | None = None,
+    credentials: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     kind = modeler(registry)
     run_id = await runs.admit(
@@ -52,7 +53,13 @@ async def run_once(
     assert claimed.run_id == run_id
     agent = build_modeler(registry.prompt_text(kind))
     final = await execute.execute(
-        ws, claimed, kind, agent=agent, model=script.model(), prompt="Model the process."
+        ws,
+        claimed,
+        kind,
+        agent=agent,
+        model=script.model(),
+        prompt="Model the process.",
+        credentials=credentials,
     )
     return run_id, final
 
