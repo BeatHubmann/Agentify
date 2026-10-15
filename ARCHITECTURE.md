@@ -1,6 +1,6 @@
 # Agentify: architecture
 
-> **Status:** signed off by the operator at gate G2 on 2026-10-14 (PR #1), together with the approvals recorded in A§1.1. No implementation code exists yet. Mechanisms below are designed, not built; `VERIFICATION.md` tracks, per requirement, whether it is proposed, implemented or verified. Changes to this document now go through governed development: a PR that states the change and its reason.
+> **Status:** signed off by the operator at gate G2 on 2026-10-14 (PR #1), together with the approvals recorded in A§1.1. This document describes the whole designed system; most of it is not built yet. What is built and what is verified is recorded per requirement in `VERIFICATION.md`, and summarized in `README.md`. Build progress: step 1 of A§27 and slices 2a to 2e of step 2, whose open rows are listed in the post-slice-2 checkpoint (`1c4ffa4`, 2026-10-15). Changes to this document now go through governed development: a PR that states the change and its reason.
 > **Authority:** `genesis/PRODUCTION-BRIEF.md` and `genesis/IMPLEMENTATION-PROMPT.md` are the specification. This document is the design that answers them. Where it departs from the brief, §25 says so, with reasons. Section references like "§6.3" point into the brief; "A§n" points into this document.
 > **Date:** 2026-10-14.
 

@@ -1,6 +1,6 @@
 # Agentify: verification ledger
 
-> **Status:** accepted with `ARCHITECTURE.md` at gate G2 on 2026-10-14 (PR #1). Slice 1 evidence is recorded as E-1; every other row stays *proposed* or *deferred* until evidence is recorded.
+> **Status:** accepted with `ARCHITECTURE.md` at gate G2 on 2026-10-14 (PR #1). Evidence records E-1 to E-14 cover slices 1 to 2e (checkpoint `1c4ffa4`, 2026-10-15). A row without evidence stays *proposed* or *deferred*.
 > **Authority:** `genesis/PRODUCTION-BRIEF.md` (cited as "§n") is the specification; `ARCHITECTURE.md` (cited as "A§n") is the design. This file maps each requirement to the evidence that will prove it. It adds no requirements.
 > **Date:** 2026-10-14.
 
@@ -34,7 +34,7 @@ This ledger maps each requirement (invariant, hazard, behavior contract, definit
 
 ## Release scope
 
-- **Release 1 (OD-12):** the foundation (§12.4 steps 1–4), node profile and governance (step 5), and acceptance contracts and conformance (step 6). These rows are *proposed*.
+- **Release 1 (OD-12):** the foundation (§12.4 steps 1–4), node profile and governance (step 5), and acceptance contracts and conformance (step 6). These rows start as *proposed*; each row's current status is in its last column.
 - **Release 2:** simulation and business case (step 7). These rows are *deferred (release 2)*. The profile fields they read are collected in release 1 (OD-16).
 - **Not scheduled:** regulatory mapping (step 8), until the operator answers §13.2.4. These rows are *deferred (OD-12)*.
 - **Not in any release yet:** the optional capabilities (OD-15), the frontend (OD-11, D-9).
@@ -196,6 +196,15 @@ These are the suites of A§26.2: `unit`, `property`, `analytic`, `orchestration`
 | Negative controls | 46 source mutations, each applied after checking its target occurs once and then reverted, all rerun on this slice's code: all 46 make their tests fail. The 15 new ones: commit without re-validation, commit reason as a count only, reads without retry, an unavailable read returned as absent or raised as an unexpected error, admission without the input check, the router returning corrupt artifacts as text, no `attempts_left`, `attempts_left` from the per-tool limit only, arity counting grandchildren, the intent UPDATE grant kept, a used confirmation accepted or offered again, free-form payloads stored raw, and the suite rules accepting `monkeypatch`. Two first survived and were fixed by stronger tests: per-tool-only `attempts_left` (the countdown now alternates two tools so the per-class limit binds) and a used confirmation offered again (the single-use test now checks the lookup) |
 | Defects found during the slice | The commit-time validation failure recorded only a count. Blob reads had no retry, and a failed read during a tool call was an unexpected exception that aborted the run. Admission never checked input artifacts, so synthesis could start over a corrupt section; the router returned a corrupt artifact's bytes as text. The correctable payload lacked `attempts_left` (A§10.2). `intent_confirmation`, a history table, had a column UPDATE grant, contrary to A§5.2 |
 | Log location | Local run; CI evidence follows on the pull request |
+
+### E-14: slice 2e in CI and on `main`, 2026-10-15 19:27 CEST (17:27 UTC)
+
+| Field | Value |
+|---|---|
+| Revision | `c8951b6` (PR #13 head; code identical to E-13's `ac5ba29`, plus the ledger) and the merge commit `1c4ffa4` on `main` |
+| Command | GitHub Actions workflow `ci`, runs 38777462612 (PR) and 38777963012 (`main`) |
+| Results | Both runs: backend checks pass (**267 passed**, 107.9 s and 103.1 s); aislop, secret scan and spell check pass. CodeQL (actions, python) passed on both |
+| Log location | https://github.com/BeatHubmann/Agentify/actions/runs/38777462612 and https://github.com/BeatHubmann/Agentify/actions/runs/38777963012 |
 
 ## 1. Invariants (§10, A§22)
 
