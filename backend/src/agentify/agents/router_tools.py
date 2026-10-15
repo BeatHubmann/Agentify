@@ -10,6 +10,7 @@ from pydantic_ai import Agent, RunContext
 
 from agentify.agents.flow_tools import FRAMEWORK_RETRIES
 from agentify.agents.inbox_tools import register_inbox_tools
+from agentify.domain.envelope import INPUTS_PREFIX, Corrupt, decode_artifact
 from agentify.harness.ports import DispatchPort, InboxPort, StagingPort, correctable
 from agentify.registry import Registry
 
@@ -43,6 +44,12 @@ def register_router_tools(agent: Agent[RouterDeps, str]) -> None:
         data = await ctx.deps.workspace.read(path)
         if data is None:
             raise correctable("not_found", f"{path} does not exist.", (path,))
+        if not path.startswith(INPUTS_PREFIX):
+            envelope = decode_artifact(data)
+            if isinstance(envelope, Corrupt):
+                raise correctable(
+                    "read_failure", f"{path} is unreadable: {envelope.reason}", (path,)
+                )
         return data.decode("utf-8", errors="replace")
 
     @agent.tool(retries=FRAMEWORK_RETRIES)

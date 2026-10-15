@@ -21,15 +21,17 @@ class RunAbort(Exception):
         self.detail = detail
 
 
-def _error_class(part: RetryPromptPart) -> str:
-    if isinstance(part.content, str):
-        try:
-            payload = json.loads(part.content)
-        except ValueError:
-            return FRAMEWORK_CLASS
-        if isinstance(payload, dict) and isinstance(payload.get("error"), str):
-            return str(payload["error"])
-    return FRAMEWORK_CLASS
+def _payload(part: RetryPromptPart) -> dict[str, object] | None:
+    """The structured payload of an Agentify correctable error; framework prompts carry none."""
+    if not isinstance(part.content, str):
+        return None
+    try:
+        payload = json.loads(part.content)
+    except ValueError:
+        return None
+    if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+        return payload
+    return None
 
 
 @dataclass
@@ -42,20 +44,33 @@ class ErrorBudget:
     total: int = 0
 
     def count(self, request: ModelRequest) -> None:
+        """Count every retry prompt in a request before it is sent, and tell the model how many
+        attempts it has left in each Agentify payload (A§10.2): the smallest remaining limit."""
+        payloads: list[tuple[RetryPromptPart, dict[str, object], str, str]] = []
         for part in request.parts:
             if not isinstance(part, RetryPromptPart):
                 continue
             tool = part.tool_name or "(output)"
-            error_class = _error_class(part)
+            payload = _payload(part)
+            error_class = FRAMEWORK_CLASS if payload is None else str(payload["error"])
             self.tools[tool] += 1
             self.classes[error_class] += 1
             self.total += 1
+            if payload is not None:
+                payloads.append((part, payload, tool, error_class))
         if (
             self.total > self.per_run
             or any(n > self.per_tool for n in self.tools.values())
             or any(n > self.per_class for n in self.classes.values())
         ):
             raise RunAbort("error_budget_exhausted", self.summary())
+        for part, payload, tool, error_class in payloads:
+            left = min(
+                self.per_tool - self.tools[tool],
+                self.per_class - self.classes[error_class],
+                self.per_run - self.total,
+            )
+            part.content = json.dumps({**payload, "attempts_left": left}, sort_keys=True)
 
     def summary(self) -> str:
         return json.dumps(

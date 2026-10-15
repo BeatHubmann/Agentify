@@ -264,6 +264,7 @@ inbox_item(item_id, version, process_id, parent_item_id, kind, category, status,
 router_continuation(id, process_id, child_run_id UNIQUE, created_at, consumed_by_run)
            -- durable notice that a router-dispatched run ended; consumed by one follow-up router turn
 intent_confirmation(id, process_id, run_kind, scope, confirmed_by, created_at)   -- attributed human intent
+intent_use(confirmation_id PK, process_id, run_id UNIQUE, used_at)   -- a confirmation's single use, append-only
 waiver(id, process_id, finding_key, revision_key, approver_id, justification_scrubbed,
        checked_authors UUID[], created_at)
 sign_off(id, process_id, artifact_path, revision_key, reviewer_id, statement_scrubbed,
@@ -279,7 +280,7 @@ rule_waiver_stats(rule_id, pack_version, findings, waivers)     -- governance me
 
 - `run`: partial unique index on `(process_id, kind) WHERE state NOT IN ('committed','unchanged','rolled_back','rollback_failed')`, that is, over every non-terminal state, so a new state added to the machine is covered automatically. A test enumerates the state enum and asserts the index predicate matches exactly the non-terminal states. That index **is** invariant 6: no code path can insert a second active run of a kind for a process, whichever entry point calls admission (A§8.2).
 - `workspace_head`: updated only by compare-and-swap inside the commit transaction (A§7.3).
-- `revision`, `revision_path`, `revision_input`, `chat_message`, `inbox_item`, `run_event`, `waiver`, `sign_off`, `intent_confirmation`: no `UPDATE` or `DELETE` grant for the application role. Immutability is enforced by database permissions; history cannot be rewritten by application code (invariant 7).
+- `revision`, `revision_path`, `revision_input`, `chat_message`, `inbox_item`, `run_event`, `waiver`, `sign_off`, `intent_confirmation`, `intent_use`: no `UPDATE` or `DELETE` grant for the application role. Immutability is enforced by database permissions; history cannot be rewritten by application code (invariant 7).
 - Database logging never records statement parameters (`log_statement = none`, `log_parameter_max_length = 0`, `log_parameter_max_length_on_error = 0`), so query values cannot leak through database logs (A§18).
 - Every engagement-scoped table has `engagement_id` (directly or through `process`) and a **row-level security** policy keyed on a per-transaction setting `agentify.engagement_ids`. The API layer checks membership; RLS is the second wall (OD-7).
 
@@ -908,6 +909,10 @@ One closed corrective loop, every link in code (§6.3): **self-validating tools 
 | **Abort** | error budget exhausted; request cap reached (`UsageLimitExceeded`); money budget exhausted; cancel / disconnect / runtime cancellation; lease lost; staging storage unavailable after bounded internal retries; provider authentication failure (401/403); provider unavailable after bounded backoff (5xx, throttling); framework `UnexpectedModelBehavior`; any unexpected exception in tool code (a bug); a second secret-gate hit on the same fingerprint in one run, outcome `secret_gate_repeated` (reported to the user with the location, not the value) | Not sent; the run ends | — | Yes: rollback, verified, reason recorded |
 
 Unexpected exceptions are aborts, not correctable errors, on purpose: an unknown failure in tool code means the tool's own validation cannot be trusted for that call. It is recorded (scrubbed traceback in the run record) and shows up in retry statistics. Spike S1 showed that a plain exception in a Pydantic AI tool propagates out of the run, so the tool wrapper converts it explicitly instead of relying on framework behavior.
+
+`attempts_left` is the smallest remaining limit (per tool, per class, per run) after the harness counted that prompt; the harness writes it into each Agentify payload before the request is sent. Retry prompts the framework generates (argument validation, unknown tools) carry the framework's own text and are counted as `framework_validation`.
+
+**Artifact reads.** Blob reads retry transient storage errors with the same bounded policy as writes (three attempts). A read that still fails reaches the agent as the correctable `artifact_read_failed`, so persistent unavailability ends the run through the error budget; a read failure in the gate or the commit aborts the run. Neither case is ever read as an absent artifact (A§22.3).
 
 **Secret-gate false positives.** If client text legitimately resembles a credential (a sample IBAN, an example key in a specification), every run would fail on it. An admin can record an allow-list entry for that exact fingerprint (hash of the matched value plus pattern id) in that engagement, with a justification; the entry is attributed and versioned. Known credential values can never be allow-listed.
 

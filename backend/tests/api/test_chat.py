@@ -20,6 +20,7 @@ import uvicorn
 from agentify import chat
 from agentify.api.app import create_app
 from agentify.api.server import uvicorn_config
+from agentify.domain.edits import merge
 from agentify.harness import execute, runs
 from agentify.harness.worker import WorkerConfig, run_worker
 from agentify.registry import AgentKind, Registry
@@ -34,7 +35,8 @@ from tests.api.conftest import (
     subject,
 )
 from tests.conftest import KNOWN_SECRET, REGISTRY_ROOT, Infra
-from tests.orchestration.test_run_exit_paths import history, leftovers
+from tests.orchestration.test_run_exit_paths import commit_golden, head_flow, history, leftovers
+from tests.orchestration.test_user_edits import edit_layer
 from tests.support.scripted import Script, Step
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -257,6 +259,64 @@ async def test_a_client_disconnect_stops_the_run_like_a_cancel(
         await leftovers(workspace, run_id),
         again.status_code,
     ) == ("rolled_back", "cancelled", "client disconnected", [], (0, 0), 201)
+
+
+async def test_a_user_edit_made_before_a_disconnect_survives_the_rollback(
+    *,
+    infra: Infra,
+    api: httpx.AsyncClient,
+    token: TokenFactory,
+    workspace: Workspace,
+    registry: Registry,
+    jwks_url: str,
+) -> None:
+    """INV-2.ME on the CD exit: the disconnect rolls the run back, never the user's revision."""
+    pid, headers = await consultant_process(api, token)
+    await commit_golden(workspace, registry, pid)
+    run_id = (
+        await api.post(
+            f"/processes/{pid}/runs",
+            json={"kind": "current-state-modeler", "mode": "incremental"},
+            headers=headers,
+        )
+    ).json()["run_id"]
+    relabel = {"op": "modify_node", "target": "approve", "payload": {"label": "edited mid-run"}}
+    async with (
+        live_server(infra, registry, jwks_url) as base,
+        # Earlier tests leave admitted runs queued; the worker may finish one before this run.
+        httpx.AsyncClient(base_url=base, timeout=30) as client,
+        worker(workspace, registry, {"current-state-modeler": slow_modeler}),
+    ):
+        async with client.stream("GET", f"/runs/{run_id}/stream", headers=headers) as response:
+            async for line in response.aiter_lines():
+                if '"tool-output-available"' in line:
+                    head = (await api.get(f"/processes/{pid}", headers=headers)).json()
+                    body = {
+                        "kind": "current-state-modeler",
+                        "base_revision_id": head["head_revision_id"],
+                        "patches": [relabel],
+                    }
+                    edited = await api.post(f"/processes/{pid}/edits", json=body, headers=headers)
+                    break  # the client goes away mid-run, right after the user's edit
+        state = await wait_state(workspace, run_id, {"rolled_back", "committed"})
+    flow = await head_flow(workspace, pid)
+    assert flow is not None
+    merged = merge(flow, await edit_layer(workspace, pid)).flow.node_map()
+    assert (
+        edited.status_code,
+        state["state"],
+        state["outcome_detail_scrubbed"],
+        [r["author_kind"] for r in await history(workspace, pid)],
+        merged["approve"].label,
+        sorted(merged),
+    ) == (
+        201,
+        "rolled_back",
+        "client disconnected",
+        ["agent_run", "user"],
+        "edited mid-run",
+        ["approve", "classify", "compute-fee", "receive"],
+    )
 
 
 async def test_a_reconnect_within_the_grace_period_keeps_the_run_going(

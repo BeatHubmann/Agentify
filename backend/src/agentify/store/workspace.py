@@ -69,7 +69,7 @@ class BaseMovedConflict(Exception):
 
 class CommitValidationFailed(Exception):
     def __init__(self, violations: list[Violation]) -> None:
-        super().__init__(f"{len(violations)} invariant violations in the merged result")
+        super().__init__("; ".join(f"{v.code}: {v.message}" for v in violations))
         self.violations = violations
 
 

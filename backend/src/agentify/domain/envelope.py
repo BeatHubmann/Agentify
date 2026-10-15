@@ -49,11 +49,21 @@ def encode(
     return canonical_json(envelope.model_dump(mode="json"))
 
 
-def _envelope(data: bytes, artifact_type: str) -> Envelope | Corrupt:
+INPUTS_PREFIX = "inputs/"  # uploaded documents: raw text, not enveloped artifacts
+
+
+def decode_artifact(data: bytes) -> Envelope | Corrupt:
+    """Any stored artifact's envelope (every path outside `INPUTS_PREFIX`)."""
     try:
-        envelope = Envelope.model_validate(json.loads(data))
+        return Envelope.model_validate(json.loads(data))
     except (ValueError, ValidationError) as exc:
         return Corrupt(f"unreadable envelope: {type(exc).__name__}")
+
+
+def _envelope(data: bytes, artifact_type: str) -> Envelope | Corrupt:
+    envelope = decode_artifact(data)
+    if isinstance(envelope, Corrupt):
+        return envelope
     if envelope.artifact_type != artifact_type:
         return Corrupt(f"expected {artifact_type}, found {envelope.artifact_type}")
     return envelope

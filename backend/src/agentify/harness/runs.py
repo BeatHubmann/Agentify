@@ -8,7 +8,7 @@ from typing import Literal
 from psycopg import errors
 
 from agentify.domain.edits import EditLayer, merge
-from agentify.domain.envelope import Corrupt, decode_edit_layer, decode_flow
+from agentify.domain.envelope import Corrupt, decode_artifact, decode_edit_layer, decode_flow
 from agentify.domain.flow import Flow
 from agentify.registry import AgentKind, ArtifactAgentKind, FlowAgentKind
 from agentify.secretgate import SecretFound
@@ -48,6 +48,18 @@ async def _read_at(
     if sha is None:
         return None
     return await ws.blobs.get(await ws.engagement_of(conn, process_id), sha)
+
+
+async def _check_inputs(
+    ws: Workspace, conn: Conn, *, process_id: str, kind: AgentKind, base: str | None
+) -> None:
+    """A run never starts on a corrupt input artifact (A§22.3); input documents are not artifacts."""
+    for path in kind.input_paths:
+        if path.endswith("/"):
+            continue
+        data = await _read_at(ws, conn, process_id, base, path)
+        if data is not None and isinstance(decode_artifact(data), Corrupt):
+            raise AdmissionRefused("input_corrupt", path)
 
 
 async def _has_something_to_lose(flow_data: bytes | None, layer: EditLayer | Corrupt) -> bool:
@@ -157,6 +169,7 @@ async def admit_in(
     if process["quarantined_at"] is not None:
         raise AdmissionRefused("process_quarantined")
     base = await ws.head_revision(conn, process_id)
+    await _check_inputs(ws, conn, process_id=process_id, kind=kind, base=base)
     if isinstance(kind, FlowAgentKind):
         something_to_lose = await _check_flow_admission(
             ws, conn, process_id=process_id, kind=kind, mode=mode, base=base
@@ -219,10 +232,12 @@ async def _consume_intent(
     if confirmation_id is None:
         raise AdmissionRefused("needs_confirmation", "from-scratch would discard the current flow")
     consumed = await conn.execute(
-        """UPDATE intent_confirmation SET consumed_by_run = %s
-           WHERE id = %s AND process_id = %s AND run_kind = %s AND consumed_by_run IS NULL
-             AND head_revision_id IS NOT DISTINCT FROM %s
-             AND created_at > now() - make_interval(mins => %s)""",
+        """INSERT INTO intent_use (confirmation_id, process_id, run_id)
+           SELECT c.id, c.process_id, %s FROM intent_confirmation c
+           WHERE c.id = %s AND c.process_id = %s AND c.run_kind = %s
+             AND c.head_revision_id IS NOT DISTINCT FROM %s
+             AND c.created_at > now() - make_interval(mins => %s)
+           ON CONFLICT (confirmation_id) DO NOTHING""",
         (run_id, confirmation_id, process_id, kind, head, INTENT_WINDOW_MINUTES),
     )
     if consumed.rowcount == 0:
@@ -358,7 +373,8 @@ async def latest_confirmation(ws: Workspace, *, process_id: str, run_kind: str) 
         row = await (
             await conn.execute(
                 """SELECT id FROM intent_confirmation
-               WHERE process_id = %s AND run_kind = %s AND consumed_by_run IS NULL
+               WHERE process_id = %s AND run_kind = %s
+                 AND id NOT IN (SELECT confirmation_id FROM intent_use)
                  AND created_at > now() - make_interval(mins => %s)
                ORDER BY created_at DESC LIMIT 1""",
                 (process_id, run_kind, INTENT_WINDOW_MINUTES),

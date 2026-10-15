@@ -1,5 +1,6 @@
 """Content-addressed, engagement-prefixed blob store on S3 (A§5.1). Blobs are never overwritten."""
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import anyio
@@ -15,14 +16,31 @@ if TYPE_CHECKING:
 _ALREADY_EXISTS = {"PreconditionFailed", "412"}
 _MISSING = {"404", "NoSuchKey", "NotFound"}
 _TRANSIENT = {"InternalError", "ServiceUnavailable", "SlowDown", "RequestTimeout", "500", "503"}
-PUT_ATTEMPTS = 3
+ATTEMPTS = 3
 _BACKOFF_SECONDS = 0.1
+
+
+class BlobUnavailable(Exception):
+    """A read that still failed transiently after the bounded retries: unavailable, never absent."""
 
 
 def _transient(exc: Exception) -> bool:
     if isinstance(exc, ClientError):
         return _error_code(exc) in _TRANSIENT
     return isinstance(exc, BotoConnectionError | HTTPClientError)
+
+
+async def _with_retries[T](call: Callable[[], T]) -> T:
+    """Run a blocking storage call in a thread; retry transient errors with linear backoff."""
+    attempt = 1
+    while True:
+        try:
+            return await anyio.to_thread.run_sync(call)
+        except (ClientError, BotoConnectionError, HTTPClientError) as exc:
+            if attempt == ATTEMPTS or not _transient(exc):
+                raise
+        await anyio.sleep(_BACKOFF_SECONDS * attempt)
+        attempt += 1
 
 
 def _error_code(exc: ClientError) -> str | None:
@@ -60,26 +78,25 @@ class BlobStore:
                 if _error_code(exc) not in _ALREADY_EXISTS:
                     raise
 
-        attempt = 1
-        while True:
-            try:
-                await anyio.to_thread.run_sync(_put)
-            except (ClientError, BotoConnectionError, HTTPClientError) as exc:
-                if attempt == PUT_ATTEMPTS or not _transient(exc):
-                    raise
-            else:
-                return sha
-            await anyio.sleep(_BACKOFF_SECONDS * attempt)
-            attempt += 1
+        await _with_retries(_put)
+        return sha
 
     async def get(self, engagement_id: str, sha: str) -> bytes:
+        """The blob's bytes, checked against its hash. Transient errors are retried, bounded; if
+        they persist the read raises `BlobUnavailable` (A§10.2)."""
+
         def _get() -> bytes:
             body = self._client.get_object(Bucket=self._bucket, Key=self.key(engagement_id, sha))[
                 "Body"
             ]
             return body.read()
 
-        data = await anyio.to_thread.run_sync(_get)
+        try:
+            data = await _with_retries(_get)
+        except (ClientError, BotoConnectionError, HTTPClientError) as exc:
+            if _transient(exc):
+                raise BlobUnavailable(f"blob {sha} unreadable after {ATTEMPTS} attempts") from exc
+            raise
         if sha256_hex(data) != sha:
             raise ValueError(f"blob {sha} failed its content check")
         return data
