@@ -22,7 +22,7 @@
 | `ponytail-review` | | |
 | `superpowers:receiving-code-review` | | |
 | `superpowers:verification-before-completion` | | |
-| `humanizer` | | |
+| `humanizer` | | <!-- explicit pass on this description and on every documentation edit: name each, and what changed --> |
 | `ponytail-audit` (step checkpoints) | | |
 | `ui-ux-pro-max` (frontend) | | |
 

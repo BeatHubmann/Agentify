@@ -224,7 +224,7 @@ Step 2 was built as slices 2a to 2e (evidence E-3 to E-14), the post-slice-2 che
 
 | Rows | Carried to | Why not in step 2 |
 |---|---|---|
-| BC-B.M3 (every orchestration test asserts artifact state and history) | Step 6 | A pass over the whole suite with a shared end-state helper; no product risk until then |
+| BC-B.M3 (every orchestration test asserts artifact state and history) | Step 6 | A pass over the whole suite with a shared end-state helper; it changes tests only |
 | INV-7.GC, the INV-1 soak, INV-6 across every entry point | Step 6 | No garbage collector, job API or migration runner exists yet |
 | BC-B.M4, INV-8.MODEL, worker concurrency (audit #7) | 3.1 | Need the model provider and real run durations |
 | INV-4.*, INV-2.INBOX, BC-B.6, BC-C.11, INV-1.UE (redesign and layout parts), BC-B.14 (profiler, contract kinds) | Step 4 | Need the redesigner, profiler, governance engine and readiness |
