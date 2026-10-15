@@ -277,7 +277,7 @@ async def test_from_scratch_dispatch_over_a_flow_needs_a_human_and_an_agent_cann
     async with workspace.db.tx() as conn:
         admitted = await (
             await conn.execute(
-                """SELECT r.mode, c.confirmed_by FROM run r JOIN intent_confirmation c ON c.consumed_by_run = r.id
+                """SELECT r.mode, c.confirmed_by FROM run r JOIN intent_use u ON u.run_id = r.id JOIN intent_confirmation c ON c.id = u.confirmation_id
                WHERE r.process_id = %s AND r.kind = 'current-state-modeler' AND r.state = 'admitted'""",
                 (process_id,),
             )

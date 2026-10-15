@@ -8,6 +8,7 @@ from agentify.domain.canonical import canonical_json
 from agentify.harness import runs
 from agentify.registry import Registry
 from agentify.store.workspace import SystemWriter, Workspace
+from tests.conftest import Infra
 from tests.orchestration.test_run_exit_paths import commit_golden
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -129,7 +130,8 @@ async def test_confirmation_is_single_use(
             entry_point="api",
             intent_confirmation_id=confirmation,
         )
-    assert refused.value.code == "confirmation_invalid"
+    offered_again = await runs.latest_confirmation(workspace, process_id=process_id, run_kind=KIND)
+    assert (refused.value.code, offered_again) == ("confirmation_invalid", None)
 
 
 async def test_unreadable_edit_layer_refuses_incremental_runs(
@@ -152,28 +154,49 @@ async def test_unreadable_edit_layer_refuses_incremental_runs(
     assert refused.value.code == "edit_layer_unreadable"
 
 
-async def test_history_tables_are_append_only_for_the_application_role(
-    workspace: Workspace, registry: Registry, process_id: str
-) -> None:
-    import psycopg
+# A§5.2: history tables have no UPDATE or DELETE grant (invariant 7). `waiver` and `sign_off` join
+# this list when they exist (step 4); `revision_input` when inbox consumption is recorded.
+HISTORY_TABLES = (
+    "revision",
+    "revision_path",
+    "chat_message",
+    "inbox_item",
+    "run_event",
+    "intent_confirmation",
+    "intent_use",
+    "security_event",
+    "secret_allowlist_entry",
+)
 
-    await commit_golden(workspace, registry, process_id)
-    denied = []
-    for statement in (
-        "UPDATE revision SET message = 'rewritten' WHERE process_id = %s",
-        "DELETE FROM revision_path WHERE revision_id IN (SELECT id FROM revision WHERE process_id = %s)",
-        "UPDATE chat_message SET content_scrubbed = 'rewritten' WHERE process_id = %s",
-        "DELETE FROM chat_message WHERE process_id = %s",
-        "UPDATE run_event SET kind = 'rewritten' WHERE run_id IN (SELECT id FROM run WHERE process_id = %s)",
-        "DELETE FROM run_event WHERE run_id IN (SELECT id FROM run WHERE process_id = %s)",
-        "UPDATE security_event SET rule = 'rewritten' WHERE process_id = %s",
-        "DELETE FROM security_event WHERE process_id = %s",
-        "UPDATE secret_allowlist_entry SET action = 'allow' WHERE engagement_id = %s",
-        "DELETE FROM secret_allowlist_entry WHERE engagement_id = %s",
-    ):
-        try:
-            async with workspace.db.tx() as conn:
-                await conn.execute(statement, (process_id,))
-        except psycopg.errors.InsufficientPrivilege:
-            denied.append(True)
-    assert denied == [True] * 10
+
+async def test_history_tables_are_append_only_for_both_application_roles(infra: Infra) -> None:
+    """Every column of every history table: a column-level UPDATE grant is a rewrite path too."""
+    import psycopg
+    from psycopg import sql
+
+    async with await psycopg.AsyncConnection.connect(infra.admin_conninfo) as admin:
+        rows = await (
+            await admin.execute(
+                """SELECT table_name::text, column_name::text FROM information_schema.columns
+                   WHERE table_schema = 'public' AND table_name = ANY(%s)""",
+                (list(HISTORY_TABLES),),
+            )
+        ).fetchall()
+    delete, update = (
+        sql.SQL("DELETE FROM {} WHERE false"),
+        sql.SQL("UPDATE {} SET {} = {} WHERE false"),
+    )
+    statements = [delete.format(sql.Identifier(table)) for table in HISTORY_TABLES]
+    statements += [
+        update.format(*map(sql.Identifier, (table, column, column))) for table, column in rows
+    ]
+    allowed: list[tuple[str, str]] = []
+    for role, conninfo in (("worker", infra.app_conninfo), ("api", infra.api_conninfo)):
+        async with await psycopg.AsyncConnection.connect(conninfo, autocommit=True) as conn:
+            for statement in statements:
+                try:
+                    await conn.execute(statement)
+                except (psycopg.errors.InsufficientPrivilege, psycopg.errors.GeneratedAlways):
+                    continue  # identity columns are refused before privileges are checked
+                allowed.append((role, statement.as_string(conn)))
+    assert (sorted({table for table, _column in rows}), allowed) == (sorted(HISTORY_TABLES), [])

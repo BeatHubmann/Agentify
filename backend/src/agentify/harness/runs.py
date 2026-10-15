@@ -232,10 +232,12 @@ async def _consume_intent(
     if confirmation_id is None:
         raise AdmissionRefused("needs_confirmation", "from-scratch would discard the current flow")
     consumed = await conn.execute(
-        """UPDATE intent_confirmation SET consumed_by_run = %s
-           WHERE id = %s AND process_id = %s AND run_kind = %s AND consumed_by_run IS NULL
-             AND head_revision_id IS NOT DISTINCT FROM %s
-             AND created_at > now() - make_interval(mins => %s)""",
+        """INSERT INTO intent_use (confirmation_id, process_id, run_id)
+           SELECT c.id, c.process_id, %s FROM intent_confirmation c
+           WHERE c.id = %s AND c.process_id = %s AND c.run_kind = %s
+             AND c.head_revision_id IS NOT DISTINCT FROM %s
+             AND c.created_at > now() - make_interval(mins => %s)
+           ON CONFLICT (confirmation_id) DO NOTHING""",
         (run_id, confirmation_id, process_id, kind, head, INTENT_WINDOW_MINUTES),
     )
     if consumed.rowcount == 0:
@@ -371,7 +373,8 @@ async def latest_confirmation(ws: Workspace, *, process_id: str, run_kind: str) 
         row = await (
             await conn.execute(
                 """SELECT id FROM intent_confirmation
-               WHERE process_id = %s AND run_kind = %s AND consumed_by_run IS NULL
+               WHERE process_id = %s AND run_kind = %s
+                 AND id NOT IN (SELECT confirmation_id FROM intent_use)
                  AND created_at > now() - make_interval(mins => %s)
                ORDER BY created_at DESC LIMIT 1""",
                 (process_id, run_kind, INTENT_WINDOW_MINUTES),
