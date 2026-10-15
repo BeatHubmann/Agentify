@@ -322,7 +322,7 @@ async def test_a_job_delivered_twice_starts_its_run_once(
     assert sum(claim is not None for claim in claims) == 1
 
 
-async def test_expired_or_foreign_confirmations_are_refused(
+async def test_expired_foreign_or_outdated_confirmations_are_refused(
     infra: Infra, workspace: Workspace, registry: Registry, process_id: str
 ) -> None:
     kind = registry.agents[KIND]
@@ -340,8 +340,12 @@ async def test_expired_or_foreign_confirmations_are_refused(
             (expired,),
         )
         await admin.commit()
+    outdated = await runs.confirm_intent(
+        workspace, process_id=process_id, run_kind=KIND, confirmed_by="c"
+    )
+    await _commit_raw(workspace, process_id, "notes/after-the-confirmation.md", b"later work")
     codes = []
-    for confirmation in (foreign, expired):
+    for confirmation in (foreign, expired, outdated):
         with pytest.raises(runs.AdmissionRefused) as refused:
             await runs.admit(
                 workspace,
@@ -353,7 +357,7 @@ async def test_expired_or_foreign_confirmations_are_refused(
                 intent_confirmation_id=confirmation,
             )
         codes.append(refused.value.code)
-    assert codes == ["confirmation_invalid", "confirmation_invalid"]
+    assert codes == ["confirmation_invalid"] * 3  # outdated: given for a head that has moved since
 
 
 async def test_corrupt_flow_reads_as_corrupt_never_as_empty(
