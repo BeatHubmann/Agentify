@@ -28,6 +28,7 @@ from agentify.domain.envelope import Corrupt, decode_edit_layer
 from agentify.harness import artifact_gate, events, gate, runs
 from agentify.harness.budget import ErrorBudget, RunAbort
 from agentify.harness.run_ports import HeadReader, RouterDispatcher, RunInbox, RunStaging
+from agentify.observability import logger
 from agentify.registry import AgentKind, ArtifactAgentKind, FlowAgentKind, Registry, RouterKind
 from agentify.secretgate import SecretFound
 from agentify.store.workspace import (
@@ -69,9 +70,18 @@ async def _lease_keeper(
     ws: Workspace, fence: Fence, config: HarnessConfig, lost: asyncio.Event
 ) -> AsyncIterator[None]:
     async def renew() -> None:
+        """A refused renewal means the lease is lost. A failed one is retried at the next tick: the
+        lease has slack, and if storage stays down the sweeper takes the run over (A§8.5)."""
         while True:
             await asyncio.sleep(config.renew_every)
-            if not await runs.renew_lease(ws, fence, config.lease_seconds):
+            try:
+                renewed = await runs.renew_lease(ws, fence, config.lease_seconds)
+            except Exception as exc:  # noqa: BLE001 - transient storage error; never ends the run here
+                logger().warning(
+                    "lease_renewal_failed", run_id=fence.run_id, error=type(exc).__name__
+                )
+                continue
+            if not renewed:
                 lost.set()
                 return
 
