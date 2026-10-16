@@ -15,7 +15,7 @@ from pydantic_ai.messages import (
 )
 
 from agentify.store import security_events
-from agentify.store.workspace import Fence, Workspace
+from agentify.store.workspace import Conn, Fence, Workspace
 
 
 async def publish(ws: Workspace, fence: Fence, kind: str, payload: dict[str, Any]) -> None:
@@ -28,17 +28,43 @@ async def publish(ws: Workspace, fence: Fence, kind: str, payload: dict[str, Any
         location=f"run_event.{kind}",
         run_id=fence.run_id,
     )
-    scrubbed = redacted.value
     async with ws.db.tx() as conn:
-        await conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtext('events:' || %s))", (fence.run_id,)
-        )
-        await conn.execute(
-            """INSERT INTO run_event (run_id, seq, kind, payload_scrubbed)
-               SELECT %s, COALESCE((SELECT max(seq) FROM run_event WHERE run_id = %s), 0) + 1, %s, %s
-               WHERE EXISTS (SELECT 1 FROM run WHERE id = %s AND lease_owner = %s AND lease_epoch = %s)""",
-            (fence.run_id, fence.run_id, kind, scrubbed, fence.run_id, fence.owner, fence.epoch),
-        )
+        await append(conn, fence.run_id, kind, redacted.value, fence=fence)
+
+
+async def append(
+    conn: Conn, run_id: str, kind: str, payload_scrubbed: str, *, fence: Fence | None = None
+) -> None:
+    """Add one event at the next sequence number, in the caller's transaction; with a `fence`,
+    only while that lease still holds the run."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('events:' || %s))", (run_id,))
+    await conn.execute(
+        """INSERT INTO run_event (run_id, seq, kind, payload_scrubbed)
+           SELECT %s, COALESCE((SELECT max(seq) FROM run_event WHERE run_id = %s), 0) + 1, %s, %s
+           WHERE %s OR EXISTS (SELECT 1 FROM run WHERE id = %s AND lease_owner = %s AND lease_epoch = %s)""",
+        (
+            run_id,
+            run_id,
+            kind,
+            payload_scrubbed,
+            fence is None,
+            run_id,
+            fence and fence.owner,
+            fence and fence.epoch,
+        ),
+    )
+
+
+async def final(ws: Workspace, run_id: str) -> tuple[int, dict[str, Any]] | None:
+    """The run's `finished` event, if it has one."""
+    async with ws.db.tx() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT seq, payload_scrubbed FROM run_event WHERE run_id = %s AND kind = 'finished'",
+                (run_id,),
+            )
+        ).fetchone()
+    return None if row is None else (int(str(row["seq"])), dict(row["payload_scrubbed"]))  # type: ignore[call-overload]
 
 
 def from_node(node: object) -> list[tuple[str, dict[str, Any]]]:

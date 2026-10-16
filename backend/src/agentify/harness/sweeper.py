@@ -2,13 +2,13 @@
 
 The sweeper takes a run over by bumping its fencing epoch, so a stalled executor that wakes up
 can no longer write or commit; then it finishes the run: committed if a revision carries its id,
-otherwise rolled back and verified.
+otherwise rolled back and verified. It also completes terminal runs whose completion effects were
+never written, because the process that ended them died first (`runs.complete`).
 """
 
 from dataclasses import dataclass
 
-from agentify.harness import events, runs
-from agentify.store import budget
+from agentify.harness import runs
 from agentify.store.workspace import Fence, Workspace
 
 ACTIVE = ("running", "gating", "committing", "rolling_back")
@@ -41,11 +41,29 @@ async def sweep(
         if fence is None:
             continue
         final = await _finish_lost_run(ws, fence)
-        await budget.release_run(ws.db, fence.run_id)
-        # The run's executor is gone; without this event its stream would wait forever (A§8.5).
-        await events.publish(ws, fence, "finished", {"state": final})
+        await runs.complete(ws, fence.run_id)
         results.append(SweepResult(fence.run_id, final))
+    for run_id in await _incomplete(ws):
+        state = await runs.complete(ws, run_id)
+        if state is not None:
+            results.append(SweepResult(run_id, state))
     return results
+
+
+async def _incomplete(ws: Workspace) -> list[str]:
+    """Terminal runs without their completion effects, once the lease of whoever ended them is
+    over: a live executor completes its own run, after its rollback verification has settled the
+    final state. The states are spelled as in the partial index `run_incomplete` (migration 0009),
+    so a prepared statement can still use it."""
+    async with ws.db.tx() as conn:
+        rows = await (
+            await conn.execute(
+                """SELECT id FROM run WHERE completed_at IS NULL
+                     AND state IN ('committed', 'unchanged', 'rolled_back', 'rollback_failed')
+                     AND COALESCE(lease_expires_at, finished_at) < now() ORDER BY finished_at"""
+            )
+        ).fetchall()
+    return [str(r["id"]) for r in rows]
 
 
 async def _take_over(
@@ -77,8 +95,6 @@ async def _finish_lost_run(ws: Workspace, fence: Fence) -> str:
                 (fence.run_id, fence.owner, fence.epoch),
             )
     if committed is not None:
-        await runs.record_continuation(ws, fence.run_id)
         return "committed"
     verified = await ws.rollback(fence, outcome="executor_lost")
-    await runs.record_continuation(ws, fence.run_id)
     return "rolled_back" if verified else "rollback_failed"

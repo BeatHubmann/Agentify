@@ -4,6 +4,7 @@ Modes:
 - `mid_run`: claim one run, stage some writes, then hang (the parent SIGKILLs it).
 - `mid_run_edit`: as `mid_run`, for an incremental run over the golden flow (one node edited).
 - `in_commit`: run to the commit and block inside the commit transaction (SIGKILL).
+- `after_commit`: commit, then block before the run's completion is delivered (SIGKILL).
 - `stall`: stage, then pause in a model step (the parent SIGSTOPs and SIGCONTs), then try to continue.
 - `worker`: run the real worker loop; SIGTERM requests a graceful stop.
 """
@@ -42,6 +43,17 @@ class HangInsideCommit(Workspace):
         return await super().commit(**{**kwargs, "validate": hang_in_transaction})
 
 
+class HangAfterCommit(Workspace):
+    """Fault injection: the commit completes, then the process blocks until killed, as an executor
+    that dies right after its run became terminal."""
+
+    async def commit(self, **kwargs: Any) -> str:  # type: ignore[override]
+        await super().commit(**kwargs)
+        print("COMMITTED", flush=True)
+        await asyncio.sleep(3600)
+        raise AssertionError("killed before this point")
+
+
 async def _hang() -> None:
     print("STAGED", flush=True)
     await asyncio.sleep(3600)
@@ -53,7 +65,7 @@ async def _stall() -> None:
 
 
 def _script(where: str) -> Script:
-    if where == "in_commit":
+    if where in {"in_commit", "after_commit"}:
         return Script(golden_calls())
     if where == "mid_run_edit":
         return Script(
@@ -96,11 +108,8 @@ async def main(argv: list[str]) -> None:
         region_name="eu-central-1",
     )
     blobs = BlobStore(s3, "artifacts")
-    ws = (
-        HangInsideCommit(db, blobs, make_gate())
-        if where == "in_commit"
-        else Workspace(db, blobs, make_gate())
-    )
+    workspace_for = {"in_commit": HangInsideCommit, "after_commit": HangAfterCommit}
+    ws = workspace_for.get(where, Workspace)(db, blobs, make_gate())
     if where == "worker":
         await _as_worker(ws, registry_root)
         return

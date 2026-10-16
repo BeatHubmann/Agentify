@@ -322,7 +322,12 @@ def _chat_routes(app: FastAPI, ctx: ApiContext, access: Access) -> None:
 
     def streaming(who: Principal, run_id: str, after: int, *, attached: bool) -> StreamingResponse:
         body = relay(
-            ctx.ws, run_id, after=after, settings=ctx.stream, scope=scoped(who), attached=attached
+            ctx.ws,
+            run_id,
+            after=after,
+            settings=ctx.stream,
+            scope=lambda: scoped(who),
+            attached=attached,
         )
         return StreamingResponse(
             body,

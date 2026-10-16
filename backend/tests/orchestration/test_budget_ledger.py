@@ -146,7 +146,8 @@ async def test_releasing_a_run_frees_its_open_reservations_and_keeps_settled_one
         amount=900_000,
         run_ceiling=2_000_000,
     )
-    released = await budget.release_run(workspace.db, scopes.run_id)
+    async with workspace.db.tx() as conn:
+        released = await budget.release_run(conn, scopes.run_id)
     assert (released, await budget.spent(workspace.db, "run", scopes.run_id)) == (1, 100_000)
 
 
